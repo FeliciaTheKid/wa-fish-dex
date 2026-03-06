@@ -1,0 +1,40 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  startTime DateTime  @default(now())
+  endTime   DateTime?
+  distance  Float     @default(0)
+  path      Json      // Stores the array of {lat, lon}
+  location  String?
+  catches   Catch[]   // Relation to catches
+  createdAt DateTime  @default(now())
+}
+
+model Catch {
+  id        String   @id @default(cuid())
+  name      String
+  quantity  Int      @default(1)
+  weight    Float?
+  length    Float?
+  date      DateTime @default(now())
+  location  String   @default("WA Field Log")
+  
+  // 🌤️ Session Conditions (Moved from Species to Catch)
+  weather   String?  // e.g., "Sunny, 65°F"
+  tide      String?  // e.g., "High Slack"
+  notes     String?  // e.g., "Biting on nightcrawlers"
+  
+  // 🔗 Session Link
+  sessionId String?
+  session   Session? @relation(fields: [sessionId], references: [id])
+  
+  createdAt DateTime @default(now())
+}
