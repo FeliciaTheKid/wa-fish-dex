@@ -416,43 +416,63 @@ const handleAddCatch = async () => {
       });
     }
   };
-
-  // --- NEW: DELETE HANDLERS ---
+// --- REINFORCED: DUAL-DELETE CATCH HANDLER ---
   const handleDeleteCatch = async (catchId: string) => {
     if (!window.confirm("Are you sure you want to delete this specimen from your log?")) return;
     
-    // Update local history
-    setHistory(prev => prev.filter(c => c.id !== catchId));
-    
-    // Update selected session view immediately
-    if (selectedSession) {
-      setSelectedSession({
-        ...selectedSession,
-        catches: selectedSession.catches.filter(c => c.id !== catchId)
-      });
-    }
-
-    // Fire off to the backend to actually delete it
     try {
-      await fetch(`/api/species/delete?id=${catchId}`, { method: 'DELETE' });
-    } catch (e) { console.error("Failed to delete catch from database", e); }
+      // ⚡️ 1. PULSE THE LOCAL VAULT (Dexie)
+      // This kills the "Ghost" immediately on your phone
+      await db.localSpecies.delete(catchId);
+
+      // 2. Update local state immediately for a snappy UI
+      setHistory(prev => prev.filter(c => c.id !== catchId));
+      
+      if (selectedSession) {
+        setSelectedSession({
+          ...selectedSession,
+          catches: selectedSession.catches.filter(c => c.id !== catchId)
+        });
+      }
+
+      // ⚡️ 3. PULSE THE CLOUD (Supabase)
+      const res = await fetch(`/api/species/delete?id=${catchId}`, { method: 'DELETE' });
+
+      if (res.ok) {
+        console.log("✅ Specimen purged from Vault and Cloud.");
+        // Refresh to ensure everything is perfectly aligned
+        await fetchData();
+      }
+    } catch (e) {
+      console.error("Delete failed:", e);
+      // Even if the cloud delete fails (no service), the local is gone!
+    }
   };
 
   const handleDeleteSession = async (sessionId: string) => {
-    if (!window.confirm("Are you sure you want to delete this entire expedition and all the specimens caught during it? This cannot be undone.")) return;
-    
-    // Remove all catches tied to this session from history
-    setHistory(prev => prev.filter(c => c.sessionId !== sessionId));
-    
-    // Clear out the current view and go back to the logs
-    setSelectedSession(null);
-    setView('sessions');
+  if (!window.confirm("Are you sure you want to delete this entire expedition?")) return;
 
-    // Fire off to the backend
-    try {
-      await fetch(`/api/species/delete-session?id=${sessionId}`, { method: 'DELETE' });
-    } catch (e) { console.error("Failed to delete session from database", e); }
-  };
+  try {
+    // ⚡️ 1. PULSE THE LOCAL VAULT (Dexie)
+    // This removes it from your phone's memory immediately
+    await db.localSessions.delete(sessionId);
+    await db.localSpecies.where('sessionId').equals(sessionId).delete();
+
+    // ⚡️ 2. PULSE THE CLOUD (Supabase)
+    const res = await fetch(`/api/species/delete-session?id=${sessionId}`, { method: 'DELETE' });
+
+    if (res.ok) {
+      // 3. REFRESH UI
+      setHistory(prev => prev.filter(c => c.sessionId !== sessionId));
+      setSessionsMetadata(prev => prev.filter(s => s.id !== sessionId));
+      setSelectedSession(null);
+      setView('sessions');
+      console.log("✅ Expedition purged from Vault and Cloud.");
+    }
+  } catch (e) {
+    console.error("Delete failed:", e);
+  }
+};
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 font-sans selection:bg-blue-500/30">
@@ -488,27 +508,41 @@ const handleAddCatch = async () => {
       </div>
     </div>
 
-    <div className="mt-12 p-4 rounded-2xl bg-slate-900/30 border border-slate-800/50 flex items-center justify-between">
-      <div className="flex items-center gap-3">
+  <div className="mt-12 p-4 rounded-2xl bg-slate-900/30 border border-slate-800/50 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className={`w-2 h-2 rounded-full ${pendingSyncCount > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></div>
+          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+            {pendingSyncCount > 0 ? 'Local Vault Active' : 'System Synced'}
+          </span>
+        </div>
         
-        <div className={`w-2 h-2 rounded-full ${pendingSyncCount > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></div>
-        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-          {pendingSyncCount > 0 ? 'Local Vault Active' : 'System Synced'}
-        </span>
+        {pendingSyncCount > 0 ? (
+          <span className="text-[9px] font-black uppercase text-amber-500 bg-amber-500/10 px-2 py-1 rounded">
+            {pendingSyncCount} Pending Items
+          </span>
+        ) : (
+          <span className="text-[9px] font-black uppercase text-emerald-500">
+            Archive Secure
+          </span>
+        )}
       </div>
-      
-      {pendingSyncCount > 0 ? (
-        <span className="text-[9px] font-black uppercase text-amber-500 bg-amber-500/10 px-2 py-1 rounded">
-          {pendingSyncCount} Pending Items
-        </span>
-      ) : (
-        <span className="text-[9px] font-black uppercase text-emerald-500">
-          Archive Secure
-        </span>
-      )}
-    </div>
-  </main>
-)}
+
+      {/* ☢️ TEMPORARY MASTER RESET BUTTON - Add this here: */}
+      <button 
+        onClick={async () => {
+          if(confirm("Wipe local vault? This clears ghost sessions from your phone.")) {
+            await db.localSpecies.clear();
+            await db.localSessions.clear();
+            window.location.reload();
+          }
+        }}
+        className="mt-6 w-full py-4 text-[9px] font-black uppercase text-red-500/30 hover:text-red-500 transition-all border border-dashed border-red-500/10 rounded-2xl"
+      >
+        Clear Local Vault Cache
+      </button>
+
+    </main>
+  )}
 
       {/* 2. ACTIVE SESSION */}
       {view === 'active-session' && (
