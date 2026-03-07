@@ -389,20 +389,26 @@ const handleAddCatch = async () => {
     setNewLength("");
     setSearchTerm("");
 
-    // 5. TRY TO SYNC IN THE BACKGROUND
-    // We don't 'await' this or block the UI. If it fails, no big deal.
+   // 5. TRY TO SYNC IN THE BACKGROUND
     fetch('/api/species/add', { 
       method: 'POST', 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newCatch) 
     }).then(async (res) => {
       if (res.ok) {
-        // If successful, update the local record to 'synced'
+        // 1. Update the Local Vault
         await db.localSpecies.update(newCatch.id, { synced: 1 });
+        
+        // 2. Update the Local State immediately so the counter drops
+        setHistory(prev => prev.map(f => 
+          f.id === newCatch.id ? { ...f, synced: 1 } : f
+        ));
+        
+        // 3. Refresh everything else
+        await fetchData(); 
+        console.log("✅ Sync successful, Status Bar updated.");
       }
-    }).catch(() => {
-      console.log("Hiking the PCT? Data is safe in the local vault.");
-    });
+    })
 
   } catch (err) {
     console.error("Local Save Failed:", err);
