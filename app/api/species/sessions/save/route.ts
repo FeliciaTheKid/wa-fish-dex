@@ -5,38 +5,35 @@ const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
-
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    
+    console.log("Saving Session ID:", body.sessionId)
+
     const { data, error } = await supabase
-      .from('Sessions') // <--- Changed from 'Session' to match your DB
-     .upsert([{
+      .from('Sessions') 
+      .upsert([{
         id: body.sessionId,
-        startTime: body.startTime ? new Date(body.startTime).toISOString() : new Date().toISOString(),
-        endTime: new Date().toISOString(),
         location: body.location || 'Unknown',
         notes: body.notes || '',
-        // --- ADD THESE WEATHER FIELDS ---
+        // These match the new SQL columns we just added
         temp: body.weather?.temp || '--',
         wind: body.weather?.wind || '--',
         cond: body.weather?.cond || '--',
-        // --- GPS DATA ---
-        distance: body.distance || 0,
-        path: body.path || []
+        startTime: body.startTime ? new Date(body.startTime).toISOString() : new Date().toISOString(),
+        endTime: new Date().toISOString()
       }])
       .select()
-      .single()
 
     if (error) {
-      console.error("Supabase Session Error:", error.message)
+      // This will show up in your VS Code Terminal
+      console.error("SUPABASE ERROR:", error.message, error.details)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    return NextResponse.json(data)
-  } catch (err) {
-    console.error("Critical Session API Error:", err)
-    return NextResponse.json({ error: 'Failed to save session' }, { status: 500 })
+    return NextResponse.json(data[0])
+  } catch (err: any) {
+    console.error("CRITICAL API ERROR:", err.message)
+    return NextResponse.json({ error: err.message }, { status: 500 })
   }
 }
