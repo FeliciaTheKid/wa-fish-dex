@@ -234,13 +234,28 @@ useEffect(() => {
     if (!navigator.onLine) return;
 
     try {
-      // 1. Sync Fish (The Specimens)
-      const unsyncedFish = await db.localSpecies.where('synced').equals(0).toArray();
-      
-      // 👇 REPLACE YOUR OLD LOOP WITH THIS DIAGNOSTIC VERSION 👇
-      for (const fish of unsyncedFish) {
-        console.log("⚡️ Attempting to sync fish:", fish.name);
+      // ⚡️ STEP 1: Sync Sessions FIRST (The Parent Record)
+      const unsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
+      for (const sess of unsyncedSessions) {
+        console.log("⚡️ Syncing Session:", sess.location);
+        const res = await fetch('/api/species/sessions/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sess)
+        });
         
+        if (res.ok) {
+          console.log("✅ Session Synced:", sess.id);
+          await db.localSessions.update(sess.id, { synced: 1 });
+        } else {
+          console.error("❌ Session Sync Failed:", await res.text());
+        }
+      }
+
+      // 🎣 STEP 2: Sync Fish SECOND (The Child Records)
+      const unsyncedFish = await db.localSpecies.where('synced').equals(0).toArray();
+      for (const fish of unsyncedFish) {
+        console.log("⚡️ Syncing Specimen:", fish.name);
         const res = await fetch('/api/species/add', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -248,30 +263,19 @@ useEffect(() => {
         });
 
         if (res.ok) {
-          console.log("✅ Sync Successful for:", fish.name);
+          console.log("✅ Specimen Synced:", fish.id);
           await db.localSpecies.update(fish.id, { synced: 1 });
         } else {
-          const errorText = await res.text();
-          console.error("❌ Sync Failed for:", fish.name, "Error:", errorText);
+          console.error("❌ Specimen Sync Failed:", await res.text());
         }
       }
-
-      // 2. Sync Sessions (Keep this as is, or add logs here too!)
-      const unsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
-      for (const sess of unsyncedSessions) {
-        const res = await fetch('/api/species/sessions/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(sess)
-        });
-        if (res.ok) await db.localSessions.update(sess.id, { synced: 1 });
-      }
       
+      // STEP 3: Refresh the UI once the "relays" are flipped
       if (unsyncedFish.length > 0 || unsyncedSessions.length > 0) {
-        fetchData(); 
+        await fetchData(); 
       }
     } catch (err) {
-      console.error("Sync Manager fault:", err);
+      console.error("Sync Manager System Fault:", err);
     }
   };
 
