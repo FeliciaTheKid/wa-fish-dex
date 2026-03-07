@@ -156,20 +156,40 @@ const fetchData = async () => {
       updateLocationData();
     }
   }, [view]);
+// --- PERSISTENCE EFFECT ---
+  useEffect(() => {
+    // Check if there is an unfinished trip saved on the phone
+    const savedId = localStorage.getItem('active_session_id');
+    const savedStart = localStorage.getItem('active_session_start');
 
+    if (savedId && savedStart) {
+      setCurrentSessionId(savedId);
+      setStartTime(parseInt(savedStart));
+      setView('active-session'); // Jump straight back to the action
+    }
+  }, []);
   // --- HANDLERS ---
-  const handleStartSession = () => {
-    setCurrentSessionId(crypto.randomUUID());
-    setStartTime(Date.now());
+const handleStartSession = () => {
+    const newId = crypto.randomUUID();
+    const now = Date.now();
+    
+    // Save to the phone's memory
+    localStorage.setItem('active_session_id', newId);
+    localStorage.setItem('active_session_start', now.toString());
+
+    setCurrentSessionId(newId);
+    setStartTime(now);
     setView('active-session');
   }
 const handleFinalizeSession = () => {
-    // Save the notes to our local dictionary before clearing the active session
     if (currentSessionId && sessionNotes) {
       setSavedNotes(prev => ({ ...prev, [currentSessionId]: sessionNotes }));
     }
     
-    // Clear the active session states
+    // Clear the phone's memory
+    localStorage.removeItem('active_session_id');
+    localStorage.removeItem('active_session_start');
+    
     setCurrentSessionId(null);
     setStartTime(null);
     setSessionNotes("");
