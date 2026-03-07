@@ -236,16 +236,27 @@ useEffect(() => {
     try {
       // 1. Sync Fish (The Specimens)
       const unsyncedFish = await db.localSpecies.where('synced').equals(0).toArray();
+      
+      // 👇 REPLACE YOUR OLD LOOP WITH THIS DIAGNOSTIC VERSION 👇
       for (const fish of unsyncedFish) {
+        console.log("⚡️ Attempting to sync fish:", fish.name);
+        
         const res = await fetch('/api/species/add', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(fish)
         });
-        if (res.ok) await db.localSpecies.update(fish.id, { synced: 1 });
+
+        if (res.ok) {
+          console.log("✅ Sync Successful for:", fish.name);
+          await db.localSpecies.update(fish.id, { synced: 1 });
+        } else {
+          const errorText = await res.text();
+          console.error("❌ Sync Failed for:", fish.name, "Error:", errorText);
+        }
       }
 
-      // 2. Sync Sessions (The Expedition Notes/Weather)
+      // 2. Sync Sessions (Keep this as is, or add logs here too!)
       const unsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
       for (const sess of unsyncedSessions) {
         const res = await fetch('/api/species/sessions/save', {
@@ -257,7 +268,7 @@ useEffect(() => {
       }
       
       if (unsyncedFish.length > 0 || unsyncedSessions.length > 0) {
-        fetchData(); // Refresh everything once the "relay" is done
+        fetchData(); 
       }
     } catch (err) {
       console.error("Sync Manager fault:", err);
