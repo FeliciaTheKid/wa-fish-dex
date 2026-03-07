@@ -54,8 +54,7 @@ export default function FishDex() {
   const [expandedActiveGroup, setExpandedActiveGroup] = useState<string | null>(null)
   const [startTime, setStartTime] = useState<number | null>(null)
   const [sessionNotes, setSessionNotes] = useState<string>("");
-  const [savedNotes, setSavedNotes] = useState<Record<string, string>>({});
-  
+ 
   // --- ADD CATCH STATE ---
   const [showAddDrawer, setShowAddDrawer] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
@@ -416,63 +415,63 @@ const handleAddCatch = async () => {
       });
     }
   };
-// --- REINFORCED: DUAL-DELETE CATCH HANDLER ---
+// --- NEW: DELETE HANDLERS ---
   const handleDeleteCatch = async (catchId: string) => {
-    if (!window.confirm("Are you sure you want to delete this specimen from your log?")) return;
+    if (!window.confirm("Delete this specimen?")) return;
     
-    try {
-      // ⚡️ 1. PULSE THE LOCAL VAULT (Dexie)
-      // This kills the "Ghost" immediately on your phone
-      await db.localSpecies.delete(catchId);
+    // 1. Kill it locally first (Instant UI)
+    // This ensures your Pixel 10 vault is clean immediately
+    await db.localSpecies.delete(catchId);
+    setHistory(prev => prev.filter(c => c.id !== catchId));
 
-      // 2. Update local state immediately for a snappy UI
-      setHistory(prev => prev.filter(c => c.id !== catchId));
-      
-      if (selectedSession) {
-        setSelectedSession({
-          ...selectedSession,
-          catches: selectedSession.catches.filter(c => c.id !== catchId)
-        });
-      }
+    // Update the detail view if it's currently open
+    if (selectedSession) {
+      setSelectedSession({
+        ...selectedSession,
+        catches: selectedSession.catches.filter(c => c.id !== catchId)
+      });
+    }
 
-      // ⚡️ 3. PULSE THE CLOUD (Supabase)
-      const res = await fetch(`/api/species/delete?id=${catchId}`, { method: 'DELETE' });
-
-      if (res.ok) {
-        console.log("✅ Specimen purged from Vault and Cloud.");
-        // Refresh to ensure everything is perfectly aligned
-        await fetchData();
-      }
-    } catch (e) {
-      console.error("Delete failed:", e);
-      // Even if the cloud delete fails (no service), the local is gone!
+    // 2. Kill it in the cloud (Supabase)
+    const res = await fetch(`/api/species/delete?id=${catchId}`, { method: 'DELETE' });
+    
+    if (!res.ok) {
+      console.error("Cloud delete failed. The fish might still be in Supabase.");
+    } else {
+      console.log("✅ Purged from the Cloud.");
+      // Optional: final sync to keep everything aligned
+      await fetchData();
     }
   };
 
-  const handleDeleteSession = async (sessionId: string) => {
-  if (!window.confirm("Are you sure you want to delete this entire expedition?")) return;
+const handleDeleteSession = async (sessionId: string) => {
+    if (!window.confirm("Are you sure you want to delete this entire expedition?")) return;
 
-  try {
-    // ⚡️ 1. PULSE THE LOCAL VAULT (Dexie)
-    // This removes it from your phone's memory immediately
-    await db.localSessions.delete(sessionId);
-    await db.localSpecies.where('sessionId').equals(sessionId).delete();
+    try {
+      // ⚡️ 1. PURGE THE LOCAL VAULT (Dexie)
+      // This removes it from your phone's memory immediately
+      await db.localSessions.delete(sessionId);
+      await db.localSpecies.where('sessionId').equals(sessionId).delete();
 
-    // ⚡️ 2. PULSE THE CLOUD (Supabase)
-    const res = await fetch(`/api/species/delete-session?id=${sessionId}`, { method: 'DELETE' });
-
-    if (res.ok) {
-      // 3. REFRESH UI
+      // ⚡️ 2. REFRESH UI IMMEDIATELY (This makes it work offline!)
       setHistory(prev => prev.filter(c => c.sessionId !== sessionId));
       setSessionsMetadata(prev => prev.filter(s => s.id !== sessionId));
       setSelectedSession(null);
       setView('sessions');
-      console.log("✅ Expedition purged from Vault and Cloud.");
+
+      // ⚡️ 3. PULSE THE CLOUD (Supabase)
+      // Wrapped in an if-statement so it doesn't throw angry network errors while offline
+      if (navigator.onLine) {
+        const res = await fetch(`/api/species/delete-session?id=${sessionId}`, { method: 'DELETE' });
+        if (res.ok) console.log("✅ Expedition purged from Cloud.");
+      } else {
+        console.log("📴 Offline: Expedition deleted locally.");
+      }
+      
+    } catch (e) {
+      console.error("Delete failed:", e);
     }
-  } catch (e) {
-    console.error("Delete failed:", e);
-  }
-};
+  };
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 font-sans selection:bg-blue-500/30">
@@ -526,21 +525,6 @@ const handleAddCatch = async () => {
           </span>
         )}
       </div>
-
-      {/* ☢️ TEMPORARY MASTER RESET BUTTON - Add this here: */}
-      <button 
-        onClick={async () => {
-          if(confirm("Wipe local vault? This clears ghost sessions from your phone.")) {
-            await db.localSpecies.clear();
-            await db.localSessions.clear();
-            window.location.reload();
-          }
-        }}
-        className="mt-6 w-full py-4 text-[9px] font-black uppercase text-red-500/30 hover:text-red-500 transition-all border border-dashed border-red-500/10 rounded-2xl"
-      >
-        Clear Local Vault Cache
-      </button>
-
     </main>
   )}
 
