@@ -64,15 +64,20 @@ export default function FishDex() {
   }, [searchTerm]);
 
   const lifeList = useMemo(() => {
-    const list: Record<string, { name: string, count: number, maxWeight: number, waters: Set<string> }> = {};
-    history.forEach(fish => {
-      if (!list[fish.name]) list[fish.name] = { name: fish.name, count: 0, maxWeight: 0, waters: new Set() };
-      list[fish.name].count++;
-      list[fish.name].waters.add(fish.location);
-      if (fish.weight > list[fish.name].maxWeight) list[fish.name].maxWeight = fish.weight;
-    });
-    return Object.values(list).sort((a, b) => b.count - a.count);
-  }, [history]);
+  const list: Record<string, { name: string, count: number, maxWeight: number, waters: Set<string> }> = {};
+  
+  // Only count fish that are officially part of a session
+  history.filter(fish => fish.sessionId).forEach(fish => {
+    if (!list[fish.name]) {
+      list[fish.name] = { name: fish.name, count: 0, maxWeight: 0, waters: new Set() };
+    }
+    list[fish.name].count++;
+    list[fish.name].waters.add(fish.location);
+    if (fish.weight > list[fish.name].maxWeight) list[fish.name].maxWeight = fish.weight;
+  });
+  
+  return Object.values(list).sort((a, b) => b.count - a.count);
+}, [history]);
 
 const sessionLogs = useMemo(() => {
     const sessions: Record<string, Expedition> = {};
@@ -104,16 +109,18 @@ const sessionLogs = useMemo(() => {
   }, [history, currentSessionId]);
 
   // --- EFFECTS ---
-  useEffect(() => {
-    if (view !== 'active-session' || !startTime) return;
-    const interval = setInterval(() => {
-      const diff = Date.now() - startTime;
-      const hours = Math.floor(diff / 3600000);
-      const minutes = Math.floor((diff % 3600000) / 60000);
-      setDisplayTime(hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [view, startTime]);
+ useEffect(() => {
+  if (!startTime) return; // Don't run if no session is active
+  
+  const interval = setInterval(() => {
+    const diff = Date.now() - startTime; 
+    const hours = Math.floor(diff / 3600000);
+    const minutes = Math.floor((diff % 3600000) / 60000);
+    setDisplayTime(hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`);
+  }, 1000);
+  
+  return () => clearInterval(interval);
+}, [startTime]); // Ensure it restarts whenever startTime changes
 
   const updateLocationData = () => {
     if (typeof window !== "undefined" && navigator.geolocation) {
@@ -157,15 +164,18 @@ const fetchData = async () => {
     }
   }, [view]);
 // --- PERSISTENCE EFFECT ---
+// --- PERSISTENCE EFFECT (UPDATED) ---
   useEffect(() => {
-    // Check if there is an unfinished trip saved on the phone
     const savedId = localStorage.getItem('active_session_id');
     const savedStart = localStorage.getItem('active_session_start');
 
     if (savedId && savedStart) {
       setCurrentSessionId(savedId);
       setStartTime(parseInt(savedStart));
-      setView('active-session'); // Jump straight back to the action
+      setView('active-session');
+      
+      // 🎣 Pull your catches back down from Supabase on refresh
+      fetchData(); 
     }
   }, []);
   // --- HANDLERS ---
