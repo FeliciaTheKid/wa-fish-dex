@@ -9,7 +9,7 @@ type View = 'home' | 'lifelist' | 'sessions' | 'active-session' | 'summary' | 's
 interface Catch {
   id: string;
   name: string;
-  quantity: number; 
+  quantity?: number;
   weight: number;
   length: number;
   date: string;

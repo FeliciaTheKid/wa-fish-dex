@@ -1,7 +1,6 @@
-import { PrismaClient } from '@prisma/client';
+// We are temporarily disabling Prisma to use the direct Supabase Client for the April 1st launch.
+// @ts-nocheck
+import { createClient } from '@supabase/supabase-js'
 
-const globalForPrisma = global as unknown as { prisma: PrismaClient };
-
-export const prisma = globalForPrisma.prisma || new PrismaClient();
-
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+const prisma = {}; // Placeholder to prevent other files from crashing
+export default prisma;
