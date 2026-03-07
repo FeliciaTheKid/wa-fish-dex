@@ -173,17 +173,17 @@ const groupedSessionCatches = useMemo(() => {
 
 const fetchData = async () => {
     try {
-      // 🎣 Fetch catches and session metadata in parallel
       const [catchRes, sessionRes] = await Promise.all([
         fetch('/api/species/list', { cache: 'no-store' }),
-        fetch('/api/sessions/list', { cache: 'no-store' }) 
+        // 🎣 Changed from '/api/sessions/list' to match your build log path
+        fetch('/api/species/sessions/list', { cache: 'no-store' }) 
       ]);
       
       const catchData = await catchRes.json();
       const sessionData = await sessionRes.json();
 
       setHistory(catchData.species || []);
-      setSessionsMetadata(sessionData.sessions || []); // Store the real weather/notes
+      setSessionsMetadata(sessionData.sessions || []); 
     } catch (e) { 
       console.error("Connection failed:", e); 
     }
@@ -241,16 +241,18 @@ useEffect(() => {
     };
 
     try {
-      // 2. Archive to the 'Sessions' table in Supabase
       const res = await fetch('/api/species/sessions/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sessionData)
       });
 
-      if (!res.ok) throw new Error("Cloud save failed");
+      // 🎣 This new logic pulls the ACTUAL error message from your API
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "Cloud save failed");
+      }
 
-      // 3. Clear phone memory ONLY if save was successful
       localStorage.removeItem('active_session_id');
       localStorage.removeItem('active_session_start');
       
@@ -258,16 +260,15 @@ useEffect(() => {
       setStartTime(null);
       setSessionNotes("");
       setView('home'); 
-      
-      // Refresh the list so the new trip shows up in the Log Book immediately
       fetchData();
-    } catch (e) {
+  } catch (e: any) {
       console.error("Archive failed:", e);
-      alert("Failed to save to cloud. Check your connection!");
-    } finally {
+      // 🎣 We're going to make this alert smarter to show the REAL error
+      alert(`Archive failed: ${e.message || "Unknown Error"}. Check Supabase Logs.`);
+   } finally {
       setLoading(false);
     }
-  }
+  };
 
   const handleAddCatch = async () => {
     if (!newName || !currentSessionId) return;
@@ -392,7 +393,7 @@ useEffect(() => {
             </div>
           </div>
         </main>
-      )}
+      )} 
       {/* 2. ACTIVE SESSION */}
       {view === 'active-session' && (
         <main className="max-w-md mx-auto px-6 pt-8 pb-40 animate-in fade-in duration-300">

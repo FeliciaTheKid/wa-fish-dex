@@ -14,15 +14,16 @@ export async function POST(req: Request) {
     console.log("Saving Catch:", body)
 
     const { data, error } = await supabase
-      .from('species') //
+      .from('species')
       .insert([{
+        id: body.id, // 🎣 NEW: You must pass the ID now that Identity is off!
         name: body.name,
         quantity: Number(body.quantity) || 1,
         weight: body.weight ? Number(body.weight) : null,
         length: body.length ? Number(body.length) : null,
         date: body.date || new Date().toISOString(),
         location: body.location || 'Unknown',
-        sessionId: body.sessionId || null // Correct! Matches your DB column
+        sessionId: body.sessionId || null
       }])
       .select()
 
