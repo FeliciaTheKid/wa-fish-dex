@@ -12,14 +12,19 @@ export async function POST(req: Request) {
     
     const { data, error } = await supabase
       .from('Sessions') // <--- Changed from 'Session' to match your DB
-      .upsert([{
-        id: body.sessionId, // Maps the frontend sessionId to the DB id column
-        startTime: new Date(body.startTime).toISOString(),
+     .upsert([{
+        id: body.sessionId,
+        startTime: body.startTime ? new Date(body.startTime).toISOString() : new Date().toISOString(),
         endTime: new Date().toISOString(),
-        distance: body.distance || 0,
-        path: body.path || [], 
         location: body.location || 'Unknown',
-        notes: body.notes || '' // Ensures your Expedition Notes are saved
+        notes: body.notes || '',
+        // --- ADD THESE WEATHER FIELDS ---
+        temp: body.weather?.temp || '--',
+        wind: body.weather?.wind || '--',
+        cond: body.weather?.cond || '--',
+        // --- GPS DATA ---
+        distance: body.distance || 0,
+        path: body.path || []
       }])
       .select()
       .single()
