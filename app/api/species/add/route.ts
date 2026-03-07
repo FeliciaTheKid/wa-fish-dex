@@ -15,15 +15,15 @@ export async function POST(req: Request) {
 
     const { data, error } = await supabase
       .from('Catch')
-      .insert([{
-        name: body.name,
-        quantity: Number(body.quantity) || 1, // Ensure it's a number
-        weight: body.weight ? Number(body.weight) : null, // Ensure it's a number
-        length: body.length ? Number(body.length) : null, // Ensure it's a number
-        date: body.date || new Date().toISOString(),
-        location: body.location || 'Unknown',
-        sessionId: body.sessionId || null
-      }])
+.insert([{
+name: body.name,
+quantity: Number(body.quantity) || 1,
+weight: body.weight ? Number(body.weight) : null,
+length: body.length ? Number(body.length) : null,
+date: body.date || new Date().toISOString(),
+location: body.location || 'Unknown',
+session_id: body.sessionId || null
+}])
       .select()
 
     if (error) {

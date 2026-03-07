@@ -9,6 +9,7 @@ type View = 'home' | 'lifelist' | 'sessions' | 'active-session' | 'summary' | 's
 interface Catch {
   id: string;
   name: string;
+  quantity: number; 
   weight: number;
   length: number;
   date: string;
@@ -178,16 +179,17 @@ const handleFinalizeSession = () => {
     if (!newName || !currentSessionId) return;
     setLoading(true);
 
-    const newCatch: Catch = {
-      id: crypto.randomUUID(),
-      name: newName,
-      weight: Number(newWeight) || 0,
-      length: Number(newLength) || 0,
-      date: new Date().toISOString(),
-      location: sessionLocation,
-      sessionId: currentSessionId,
-      media: [] 
-    };
+const newCatch: Catch = {
+id: crypto.randomUUID(),
+name: newName,
+quantity: 1,
+weight: Number(newWeight) || 0,
+length: Number(newLength) || 0,
+date: new Date().toISOString(),
+location: sessionLocation,
+sessionId: currentSessionId,
+media: []
+};
 
     setHistory(prev => [newCatch, ...prev]);
 
