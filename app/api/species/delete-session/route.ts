@@ -15,11 +15,10 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Session ID is required" }, { status: 400 })
     }
 
-    // This deletes EVERY fish that has this sessionId
     const { error } = await supabase
-      .from('Catch') 
+      .from('species') // <--- Changed from 'Catch' to match your DB
       .delete()
-      .eq('sessionId', sessionId)
+      .eq('sessionId', sessionId) // This targets every fish in the trip
 
     if (error) throw error
 

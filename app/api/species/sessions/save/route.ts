@@ -10,18 +10,16 @@ export async function POST(req: Request) {
   try {
     const body = await req.json()
     
-    // We use .upsert() here. 
-    // If the session was already created, it updates it. 
-    // If not, it creates a fresh one.
     const { data, error } = await supabase
-      .from('Session')
+      .from('Sessions') // <--- Changed from 'Session' to match your DB
       .upsert([{
-        id: body.sessionId, // The ID we generated on the frontend
+        id: body.sessionId, // Maps the frontend sessionId to the DB id column
         startTime: new Date(body.startTime).toISOString(),
         endTime: new Date().toISOString(),
         distance: body.distance || 0,
-        path: body.path || [], // This stores your GPS array as JSON
-        location: body.location || 'Unknown'
+        path: body.path || [], 
+        location: body.location || 'Unknown',
+        notes: body.notes || '' // Ensures your Expedition Notes are saved
       }])
       .select()
       .single()

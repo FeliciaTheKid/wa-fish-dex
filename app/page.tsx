@@ -4,6 +4,10 @@ import { getNearestWater, getWaterWithinRadius, calculateDistance } from "@/lib/
 import { useState, useEffect, useMemo } from 'react'
 import { ALL_SPECIES, FISH_GUIDE } from '@/lib/species-db'
 
+const getWindDirection = (deg: number) => {
+  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  return directions[Math.round(deg / 45) % 8];
+}
 type View = 'home' | 'lifelist' | 'sessions' | 'active-session' | 'summary' | 'session-detail'
 
 interface Catch {
@@ -29,11 +33,13 @@ interface Expedition {
 }
 
 export default function FishDex() {
-  const [view, setView] = useState<View>('home')
-  const [history, setHistory] = useState<Catch[]>([])
+ const [view, setView] = useState<View>('home')
   const [loading, setLoading] = useState(false)
   const [expandedLifeSpecies, setExpandedLifeSpecies] = useState<string | null>(null)
   
+  // --- DATABASE STATES ---
+  const [history, setHistory] = useState<Catch[]>([])
+  const [sessionsMetadata, setSessionsMetadata] = useState<any[]>([])
   // --- LOCATION & WEATHER ---
   const [sessionLocation, setSessionLocation] = useState<string>("Detecting Location...");
   const [isEditingLocation, setIsEditingLocation] = useState(false);
@@ -81,24 +87,35 @@ export default function FishDex() {
 
 const sessionLogs = useMemo(() => {
     const sessions: Record<string, Expedition> = {};
+
     history.forEach(f => {
       if (!f.sessionId) return;
+      
+      // Look for real metadata (weather/notes) for this session
+      const meta = sessionsMetadata.find(m => m.id === f.sessionId);
+
       if (!sessions[f.sessionId]) {
         sessions[f.sessionId] = { 
           id: f.sessionId, 
           location: f.location, 
           date: f.date, 
           catches: [], 
-          notes: savedNotes[f.sessionId] || "No notes recorded for this expedition.", 
-          weather: { temp: '52°F', wind: '6mph S', cond: 'Overcast' } 
+          // Use real notes from DB, or fallback to placeholder
+          notes: meta?.notes || "No notes recorded.", 
+          // Use real weather from DB, or fallback to placeholder
+          weather: { 
+            temp: meta?.temp || '52°F', 
+            wind: meta?.wind || '6mph S', 
+            cond: meta?.cond || 'Overcast' 
+          } 
         };
       }
       sessions[f.sessionId].catches.push(f);
     });
-    return Object.values(sessions).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [history, savedNotes]);
 
-  const groupedSessionCatches = useMemo(() => {
+    return Object.values(sessions).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [history, sessionsMetadata]);
+const groupedSessionCatches = useMemo(() => {
     const sessionHistory = history.filter(h => currentSessionId && h.sessionId === currentSessionId);
     const groups: Record<string, { name: string, items: Catch[] }> = {};
     sessionHistory.forEach(fish => {
@@ -107,7 +124,6 @@ const sessionLogs = useMemo(() => {
     });
     return Object.values(groups).sort((a, b) => a.name.localeCompare(b.name));
   }, [history, currentSessionId]);
-
   // --- EFFECTS ---
  useEffect(() => {
   if (!startTime) return; // Don't run if no session is active
@@ -123,32 +139,51 @@ const sessionLogs = useMemo(() => {
 }, [startTime]); // Ensure it restarts whenever startTime changes
 
   const updateLocationData = () => {
-    if (typeof window !== "undefined" && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition((pos) => {
-        const { latitude: lat, longitude: lon } = pos.coords;
-        const nearby = getWaterWithinRadius(lat, lon, 15).map((name: string) => ({
-          name,
-          dist: calculateDistance(lat, lon, name) 
-        })).sort((a, b) => a.dist - b.dist);
-        setNearbyWaters(nearby);
-        if (sessionLocation === "Detecting Location...") setSessionLocation(nearby[0]?.name || "Current Expedition");
-        setWeather({ temp: '52°F', wind: '6mph S', cond: 'Overcast' });
-      });
-    }
-  };
+  if (typeof window !== "undefined" && navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const { latitude: lat, longitude: lon } = pos.coords;
+      
+      // 1. Existing Water Detection
+      const nearby = getWaterWithinRadius(lat, lon, 15).map((name: string) => ({
+        name,
+        dist: calculateDistance(lat, lon, name) 
+      })).sort((a, b) => a.dist - b.dist);
+      setNearbyWaters(nearby);
+      if (sessionLocation === "Detecting Location...") setSessionLocation(nearby[0]?.name || "Current Expedition");
+
+      // 2. NEW: Real-Time Weather Fetch
+      try {
+        const apiKey = process.env.NEXT_PUBLIC_OPENWEATHER_KEY;
+        const res = await fetch(
+          `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${apiKey}&units=imperial`
+        );
+        const data = await res.json();
+        
+        setWeather({
+          temp: `${Math.round(data.main.temp)}°F`,
+          wind: `${Math.round(data.wind.speed)}mph ${getWindDirection(data.wind.deg)}`,
+          cond: data.weather[0].main
+        });
+      } catch (e) {
+        console.error("Weather sync failed:", e);
+      }
+    });
+  }
+};
 
 const fetchData = async () => {
     try {
-      const res = await fetch('/api/species/list', { cache: 'no-store' });
+      // 🎣 Fetch catches and session metadata in parallel
+      const [catchRes, sessionRes] = await Promise.all([
+        fetch('/api/species/list', { cache: 'no-store' }),
+        fetch('/api/sessions/list', { cache: 'no-store' }) 
+      ]);
       
-      // This is the "Bouncer" check for that 401 error
-      if (res.status === 401) {
-        console.error("Access Denied: Check Vercel Deployment Protection or Supabase Keys.");
-        return;
-      }
+      const catchData = await catchRes.json();
+      const sessionData = await sessionRes.json();
 
-      const data = await res.json();
-      setHistory(data.species || []);
+      setHistory(catchData.species || []);
+      setSessionsMetadata(sessionData.sessions || []); // Store the real weather/notes
     } catch (e) { 
       console.error("Connection failed:", e); 
     }
@@ -179,12 +214,12 @@ useEffect(() => {
     fetchData(); 
   }
 }, []);
-  // --- HANDLERS ---
-const handleStartSession = () => {
+// --- HANDLERS ---
+  const handleStartSession = () => {
     const newId = crypto.randomUUID();
     const now = Date.now();
     
-    // Save to the phone's memory
+    // Lock session into phone's vault
     localStorage.setItem('active_session_id', newId);
     localStorage.setItem('active_session_start', now.toString());
 
@@ -192,40 +227,71 @@ const handleStartSession = () => {
     setStartTime(now);
     setView('active-session');
   }
-const handleFinalizeSession = () => {
-    if (currentSessionId && sessionNotes) {
-      setSavedNotes(prev => ({ ...prev, [currentSessionId]: sessionNotes }));
+
+  const handleFinalizeSession = async () => {
+    setLoading(true);
+    
+    // 1. Pack the Expedition Data
+    const sessionData = {
+      sessionId: currentSessionId,
+      startTime: startTime,
+      location: sessionLocation,
+      notes: sessionNotes,
+      weather: weather // This captures the REAL weather we fetched
+    };
+
+    try {
+      // 2. Archive to the 'Sessions' table in Supabase
+      const res = await fetch('/api/species/sessions/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sessionData)
+      });
+
+      if (!res.ok) throw new Error("Cloud save failed");
+
+      // 3. Clear phone memory ONLY if save was successful
+      localStorage.removeItem('active_session_id');
+      localStorage.removeItem('active_session_start');
+      
+      setCurrentSessionId(null);
+      setStartTime(null);
+      setSessionNotes("");
+      setView('home'); 
+      
+      // Refresh the list so the new trip shows up in the Log Book immediately
+      fetchData();
+    } catch (e) {
+      console.error("Archive failed:", e);
+      alert("Failed to save to cloud. Check your connection!");
+    } finally {
+      setLoading(false);
     }
-    
-    // Clear the phone's memory
-    localStorage.removeItem('active_session_id');
-    localStorage.removeItem('active_session_start');
-    
-    setCurrentSessionId(null);
-    setStartTime(null);
-    setSessionNotes("");
-    setView('home'); 
   }
+
   const handleAddCatch = async () => {
     if (!newName || !currentSessionId) return;
     setLoading(true);
 
-const newCatch: Catch = {
-id: crypto.randomUUID(),
-name: newName,
-quantity: 1,
-weight: Number(newWeight) || 0,
-length: Number(newLength) || 0,
-date: new Date().toISOString(),
-location: sessionLocation,
-sessionId: currentSessionId,
-media: []
-};
+    const newCatch: Catch = {
+      id: crypto.randomUUID(),
+      name: newName,
+      quantity: 1,
+      weight: Number(newWeight) || 0,
+      length: Number(newLength) || 0,
+      date: new Date().toISOString(),
+      location: sessionLocation,
+      sessionId: currentSessionId,
+      media: []
+    };
 
+    // Update local UI immediately for that "snappy" feeling
     setHistory(prev => [newCatch, ...prev]);
 
+    // Send to 'species' table
     await fetch('/api/species/add', { 
       method: 'POST', 
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newCatch) 
     });
 
@@ -326,7 +392,7 @@ media: []
             </div>
           </div>
         </main>
-      )}"
+      )}
       {/* 2. ACTIVE SESSION */}
       {view === 'active-session' && (
         <main className="max-w-md mx-auto px-6 pt-8 pb-40 animate-in fade-in duration-300">
