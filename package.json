@@ -2,10 +2,9 @@
   "private": true,
 "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "npx prisma generate && next build",
     "start": "next start",
-    "lint": "eslint .",
-    "postinstall": "npx --yes prisma generate"
+    "lint": "eslint ."
   },
   "dependencies": {
     "@prisma/client": "^7.4.2",
