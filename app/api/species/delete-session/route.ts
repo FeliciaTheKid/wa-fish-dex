@@ -15,13 +15,17 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Session ID is required" }, { status: 400 })
     }
 
+    // 🎣 Target the parent table 'Sessions'
     const { error } = await supabase
-      .from('species') // <--- Changed from 'Catch' to match your DB
+      .from('Sessions') 
       .delete()
-      .eq('sessionId', sessionId) // This targets every fish in the trip
+      .eq('id', sessionId) // Use 'id' because that's the column name in Sessions
 
     if (error) throw error
 
+    // Because of your 'Cascade Delete' setting in Supabase,
+    // all fish with this sessionId in the 'species' table 
+    // are now also deleted. Circuit complete!
     return NextResponse.json({ success: true })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })

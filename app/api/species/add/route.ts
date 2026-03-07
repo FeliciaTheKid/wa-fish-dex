@@ -16,14 +16,15 @@ export async function POST(req: Request) {
     const { data, error } = await supabase
       .from('species')
       .insert([{
-        id: body.id, // 🎣 NEW: You must pass the ID now that Identity is off!
+        id: body.id,
         name: body.name,
         quantity: Number(body.quantity) || 1,
         weight: body.weight ? Number(body.weight) : null,
         length: body.length ? Number(body.length) : null,
         date: body.date || new Date().toISOString(),
         location: body.location || 'Unknown',
-        sessionId: body.sessionId || null
+        sessionId: body.sessionId || null,
+        notes: body.notes || '' // 🎣 Added this to match your UI
       }])
       .select()
 

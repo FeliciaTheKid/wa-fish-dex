@@ -3,6 +3,7 @@
 import { getNearestWater, getWaterWithinRadius, calculateDistance } from "@/lib/utils";
 import { useState, useEffect, useMemo } from 'react'
 import { ALL_SPECIES, FISH_GUIDE } from '@/lib/species-db'
+import { db } from '../lib/db';
 
 const getWindDirection = (deg: number) => {
   const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
@@ -13,12 +14,12 @@ type View = 'home' | 'lifelist' | 'sessions' | 'active-session' | 'summary' | 's
 interface Catch {
   id: string;
   name: string;
-  quantity?: number;
   weight: number;
   length: number;
   date: string;
   location: string;
   sessionId: string;
+  synced: number;
   media?: string[];
 }
 
@@ -63,11 +64,17 @@ export default function FishDex() {
   const [newLength, setNewLength] = useState("")
   const [displayTime, setDisplayTime] = useState("0m");
 
-  // --- DATA AGGREGATION ---
-  const filteredSpecies = useMemo(() => {
-    if (!searchTerm) return ALL_SPECIES.slice(0, 5);
-    return ALL_SPECIES.filter(s => s.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 5);
-  }, [searchTerm]);
+ // --- DATA AGGREGATION ---
+ const pendingSyncCount = useMemo(() => {
+  const unsyncedFish = history.filter(f => (f as any).synced === 0).length;
+  const unsyncedSessions = sessionsMetadata.filter(s => s.synced === 0).length;
+  return unsyncedFish + unsyncedSessions;
+}, [history, sessionsMetadata]);
+
+const filteredSpecies = useMemo(() => {
+  if (!searchTerm) return ALL_SPECIES.slice(0, 5);
+  return ALL_SPECIES.filter(s => s.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 5);
+}, [searchTerm]);
 
   const lifeList = useMemo(() => {
   const list: Record<string, { name: string, count: number, maxWeight: number, waters: Set<string> }> = {};
@@ -170,24 +177,31 @@ const groupedSessionCatches = useMemo(() => {
     });
   }
 };
-
 const fetchData = async () => {
-    try {
-      const [catchRes, sessionRes] = await Promise.all([
-        fetch('/api/species/list', { cache: 'no-store' }),
-        // 🎣 Changed from '/api/sessions/list' to match your build log path
-        fetch('/api/species/sessions/list', { cache: 'no-store' }) 
-      ]);
-      
-      const catchData = await catchRes.json();
-      const sessionData = await sessionRes.json();
+  try {
+    // 1. Get the cloud data
+    const [catchRes, sessionRes] = await Promise.all([
+      fetch('/api/species/list', { cache: 'no-store' }),
+      fetch('/api/species/sessions/list', { cache: 'no-store' }) 
+    ]);
+    
+    const catchData = await catchRes.json();
+    const sessionData = await sessionRes.json();
 
-      setHistory(catchData.species || []);
-      setSessionsMetadata(sessionData.sessions || []); 
-    } catch (e) { 
-      console.error("Connection failed:", e); 
-    }
+    // 2. Get the "Unsynced" data from your phone (Both fish and sessions)
+const localUnsyncedFish = await db.localSpecies.where('synced').equals(0).toArray();
+const localUnsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
+
+// 3. Merge them
+setHistory([...localUnsyncedFish, ...(catchData.species || [])]);
+setSessionsMetadata([...localUnsyncedSessions, ...(sessionData.sessions || [])]);
+  } catch (e) { 
+    // 🌲 IF OFFLINE: Just show the local vault!
+    const allLocal = await db.localSpecies.toArray();
+    setHistory(allLocal);
+    console.log("Offline mode: Displaying local vault only.");
   }
+}
 
   useEffect(() => { 
     fetchData(); 
@@ -214,6 +228,46 @@ useEffect(() => {
     fetchData(); 
   }
 }, []);
+// --- SYNC MANAGER EFFECT ---
+useEffect(() => {
+  const syncOfflineData = async () => {
+    if (!navigator.onLine) return;
+
+    try {
+      // 1. Sync Fish (The Specimens)
+      const unsyncedFish = await db.localSpecies.where('synced').equals(0).toArray();
+      for (const fish of unsyncedFish) {
+        const res = await fetch('/api/species/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(fish)
+        });
+        if (res.ok) await db.localSpecies.update(fish.id, { synced: 1 });
+      }
+
+      // 2. Sync Sessions (The Expedition Notes/Weather)
+      const unsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
+      for (const sess of unsyncedSessions) {
+        const res = await fetch('/api/species/sessions/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sess)
+        });
+        if (res.ok) await db.localSessions.update(sess.id, { synced: 1 });
+      }
+      
+      if (unsyncedFish.length > 0 || unsyncedSessions.length > 0) {
+        fetchData(); // Refresh everything once the "relay" is done
+      }
+    } catch (err) {
+      console.error("Sync Manager fault:", err);
+    }
+  };
+
+  syncOfflineData();
+  window.addEventListener('online', syncOfflineData);
+  return () => window.removeEventListener('online', syncOfflineData);
+}, []);
 // --- HANDLERS ---
   const handleStartSession = () => {
     const newId = crypto.randomUUID();
@@ -228,81 +282,118 @@ useEffect(() => {
     setView('active-session');
   }
 
-  const handleFinalizeSession = async () => {
-    setLoading(true);
-    
-    // 1. Pack the Expedition Data
-    const sessionData = {
-      sessionId: currentSessionId,
-      startTime: startTime,
-      location: sessionLocation,
-      notes: sessionNotes,
-      weather: weather // This captures the REAL weather we fetched
-    };
+const handleFinalizeSession = async () => {
+  if (!currentSessionId) return;
+  
+  setLoading(true);
+  
+  // 1. Pack the data (This is the "wiring" we did earlier)
+  const sessionData = {
+    id: currentSessionId,
+    location: sessionLocation,
+    startTime: new Date(startTime!).toISOString(),
+    notes: sessionNotes,
+    temp: weather.temp,
+    wind: weather.wind,
+    cond: weather.cond
+  };
 
-    try {
-      const res = await fetch('/api/species/sessions/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sessionData)
-      });
+  try {
+    // ⚡️ 2. SAVE TO LOCAL VAULT FIRST (The "Battery Backup")
+    // If the hike back to the car has no service, the data is safe here.
+    await db.localSessions.add({
+      ...sessionData,
+      synced: 0 // Mark as not yet reached the cloud
+    });
 
-      // 🎣 This new logic pulls the ACTUAL error message from your API
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || "Cloud save failed");
-      }
+    // 3. NOW try to hit the "Grid" (Supabase)
+    const res = await fetch('/api/species/sessions/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sessionData)
+    });
 
+    if (res.ok) {
+      // 4. If successful, mark the local copy as synced
+      await db.localSessions.update(sessionData.id, { synced: 1 });
+      
       localStorage.removeItem('active_session_id');
       localStorage.removeItem('active_session_start');
       
       setCurrentSessionId(null);
       setStartTime(null);
       setSessionNotes("");
+      await fetchData();
       setView('home'); 
-      fetchData();
-  } catch (e: any) {
-      console.error("Archive failed:", e);
-      // 🎣 We're going to make this alert smarter to show the REAL error
-      alert(`Archive failed: ${e.message || "Unknown Error"}. Check Supabase Logs.`);
-   } finally {
-      setLoading(false);
     }
+  } catch (e: any) {
+    // 🌲 If this fails (No service on the PCT), the app won't crash!
+    // We just tell the user it's saved locally for now.
+    console.log("Cloud save failed, but trip is safe in the Local Vault.");
+    
+    // Reset the UI anyway so they can start a new trip later
+    localStorage.removeItem('active_session_id');
+    localStorage.removeItem('active_session_start');
+    setCurrentSessionId(null);
+    setStartTime(null);
+    setView('home');
+  } finally {
+    setLoading(false);
+  }
+};
+const handleAddCatch = async () => {
+  if (!newName || !currentSessionId) return;
+
+  // 1. Create the Catch object
+  // We add 'synced: 0' so we can track what hasn't hit Supabase yet
+  const newCatch = {
+    id: crypto.randomUUID(),
+    name: newName,
+    quantity: 1,
+    weight: Number(newWeight) || 0,
+    length: Number(newLength) || 0,
+    date: new Date().toISOString(),
+    location: sessionLocation,
+    sessionId: currentSessionId,
+    media: [],
+    synced: 0 // 🎣 New: 0 = local only, 1 = saved to cloud
   };
 
-  const handleAddCatch = async () => {
-    if (!newName || !currentSessionId) return;
-    setLoading(true);
+  try {
+    // 2. SAVE TO LOCAL VAULT FIRST (The "Battery")
+    // This is instant and works without a cell signal
+    await db.localSpecies.add(newCatch);
 
-    const newCatch: Catch = {
-      id: crypto.randomUUID(),
-      name: newName,
-      quantity: 1,
-      weight: Number(newWeight) || 0,
-      length: Number(newLength) || 0,
-      date: new Date().toISOString(),
-      location: sessionLocation,
-      sessionId: currentSessionId,
-      media: []
-    };
-
-    // Update local UI immediately for that "snappy" feeling
+    // 3. Update UI immediately
     setHistory(prev => [newCatch, ...prev]);
 
-    // Send to 'species' table
-    await fetch('/api/species/add', { 
-      method: 'POST', 
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newCatch) 
-    });
-
+    // 4. Reset the UI/Drawer
     setShowAddDrawer(false);
     setNewName("");
     setNewWeight("");
     setNewLength("");
     setSearchTerm("");
-    setLoading(false);
-  };
+
+    // 5. TRY TO SYNC IN THE BACKGROUND
+    // We don't 'await' this or block the UI. If it fails, no big deal.
+    fetch('/api/species/add', { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newCatch) 
+    }).then(async (res) => {
+      if (res.ok) {
+        // If successful, update the local record to 'synced'
+        await db.localSpecies.update(newCatch.id, { synced: 1 });
+      }
+    }).catch(() => {
+      console.log("Hiking the PCT? Data is safe in the local vault.");
+    });
+
+  } catch (err) {
+    console.error("Local Save Failed:", err);
+    alert("Database Error: Is your phone storage full?");
+  }
+};
 
   const handleImageUpload = (catchId: string, file: File) => {
     const fakeUrl = URL.createObjectURL(file);
@@ -363,37 +454,59 @@ useEffect(() => {
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 font-sans selection:bg-blue-500/30">
       
-      {/* 1. HOME VIEW */}
-      {view === 'home' && (
-        <main className="max-w-md mx-auto px-6 pt-20">
-          <h1 className="text-8xl font-black italic text-white mb-2 tracking-tighter">eFish</h1>
-          <p className="text-blue-500 font-black text-[10px] uppercase tracking-[0.4em] mb-12 text-center">The Washington Archive</p>
-          <div className="space-y-4">
-            {currentSessionId ? (
-              <button onClick={() => setView('active-session')} className="w-full py-10 rounded-[2.5rem] bg-blue-600 shadow-2xl flex flex-col items-center gap-1 border-b-4 border-blue-800">
-                <span className="text-[10px] font-black uppercase tracking-widest animate-pulse">Session Active</span>
-                <span className="text-2xl font-black uppercase italic tracking-tighter">Resume Trip</span>
-              </button>
-            ) : (
-              <button onClick={handleStartSession} className="w-full py-14 rounded-[3rem] bg-slate-900 border border-slate-800 flex flex-col items-center justify-center gap-4 active:scale-95 transition-all">
-                <span className="text-6xl text-white">⚓</span>
-                <span className="font-black uppercase tracking-[0.2em] text-xs">Start New Trip</span>
-              </button>
-            )}
+       {/* 1. HOME VIEW */}
+{view === 'home' && (
+  <main className="max-w-md mx-auto px-6 pt-20 pb-10 flex flex-col min-h-screen">
+    <h1 className="text-8xl font-black italic text-white mb-2 tracking-tighter">eFish</h1>
+    <p className="text-blue-500 font-black text-[10px] uppercase tracking-[0.4em] mb-12 text-center">The Washington Archive</p>
+    
+    <div className="space-y-4 flex-grow">
+      {currentSessionId ? (
+        <button onClick={() => setView('active-session')} className="w-full py-10 rounded-[2.5rem] bg-blue-600 shadow-2xl flex flex-col items-center gap-1 border-b-4 border-blue-800">
+          <span className="text-[10px] font-black uppercase tracking-widest animate-pulse">Session Active</span>
+          <span className="text-2xl font-black uppercase italic tracking-tighter">Resume Trip</span>
+        </button>
+      ) : (
+        <button onClick={handleStartSession} className="w-full py-14 rounded-[3rem] bg-slate-900 border border-slate-800 flex flex-col items-center justify-center gap-4 active:scale-95 transition-all">
+          <span className="text-6xl text-white">⚓</span>
+          <span className="font-black uppercase tracking-[0.2em] text-xs">Start New Trip</span>
+        </button>
+      )}
 
-            <div className="grid grid-cols-2 gap-4">
-              <button onClick={() => setView('lifelist')} className="bg-slate-900/50 p-8 rounded-[2rem] border border-slate-800 flex flex-col items-center gap-2 hover:bg-slate-800">
-                <span className="text-2xl">🏆</span>
-                <span className="text-[10px] font-black uppercase tracking-widest">Life List</span>
-              </button>
-              <button onClick={() => setView('sessions')} className="bg-slate-900/50 p-8 rounded-[2rem] border border-slate-800 flex flex-col items-center gap-2 hover:bg-slate-800">
-                <span className="text-2xl">📖</span>
-                <span className="text-[10px] font-black uppercase tracking-widest">Log Book</span>
-              </button>
-            </div>
-          </div>
-        </main>
-      )} 
+      <div className="grid grid-cols-2 gap-4">
+        <button onClick={() => setView('lifelist')} className="bg-slate-900/50 p-8 rounded-[2rem] border border-slate-800 flex flex-col items-center gap-2 hover:bg-slate-800">
+          <span className="text-2xl">🏆</span>
+          <span className="text-[10px] font-black uppercase tracking-widest">Life List</span>
+        </button>
+        <button onClick={() => setView('sessions')} className="bg-slate-900/50 p-8 rounded-[2rem] border border-slate-800 flex flex-col items-center gap-2 hover:bg-slate-800">
+          <span className="text-2xl">📖</span>
+          <span className="text-[10px] font-black uppercase tracking-widest">Log Book</span>
+        </button>
+      </div>
+    </div>
+
+    <div className="mt-12 p-4 rounded-2xl bg-slate-900/30 border border-slate-800/50 flex items-center justify-between">
+      <div className="flex items-center gap-3">
+        
+        <div className={`w-2 h-2 rounded-full ${pendingSyncCount > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></div>
+        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+          {pendingSyncCount > 0 ? 'Local Vault Active' : 'System Synced'}
+        </span>
+      </div>
+      
+      {pendingSyncCount > 0 ? (
+        <span className="text-[9px] font-black uppercase text-amber-500 bg-amber-500/10 px-2 py-1 rounded">
+          {pendingSyncCount} Pending Items
+        </span>
+      ) : (
+        <span className="text-[9px] font-black uppercase text-emerald-500">
+          Archive Secure
+        </span>
+      )}
+    </div>
+  </main>
+)}
+
       {/* 2. ACTIVE SESSION */}
       {view === 'active-session' && (
         <main className="max-w-md mx-auto px-6 pt-8 pb-40 animate-in fade-in duration-300">
@@ -552,15 +665,27 @@ useEffect(() => {
           <h2 className="text-5xl font-black italic uppercase mb-2 tracking-tighter text-white">Life List</h2>
           <p className="text-blue-500 font-black text-[10px] uppercase mb-10">{lifeList.length} Species Found</p>
           <div className="space-y-3">
-            {lifeList.map(item => (
-              <div key={item.name} className="bg-slate-900 rounded-[2rem] border border-slate-800 overflow-hidden shadow-lg">
-                <button onClick={() => setExpandedLifeSpecies(expandedLifeSpecies === item.name ? null : item.name)} className="w-full p-6 flex justify-between items-center text-left">
-                  <div>
-                    <p className="text-xs font-black uppercase tracking-widest text-white">{item.name}</p>
-                    <p className="text-[9px] font-bold text-slate-500 uppercase mt-1">Total: {item.count} • P.B. {item.maxWeight}lb</p>
-                  </div>
-                  <span className="text-blue-500 text-xs">{expandedLifeSpecies === item.name ? '▲' : '▼'}</span>
-                </button>
+           {lifeList.map(item => (
+  <div key={item.name} className="bg-slate-900 rounded-[2rem] border border-slate-800 overflow-hidden shadow-lg">
+    <button onClick={() => setExpandedLifeSpecies(expandedLifeSpecies === item.name ? null : item.name)} className="w-full p-6 flex justify-between items-center text-left">
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <p className="text-xs font-black uppercase tracking-widest text-white">{item.name}</p>
+          
+          {/* 🎣 The Sync Badge: Checks if any fish in history with this name are unsynced */}
+          {history.some(f => f.name === item.name && (f as any).synced === 0) && (
+            <span className="text-[7px] font-black uppercase px-1.5 py-0.5 bg-amber-500/20 text-amber-500 border border-amber-500/30 rounded animate-pulse">
+              Waiting to Sync
+            </span>
+          )}
+        </div>
+        <p className="text-[9px] font-bold text-slate-500 uppercase">
+          Total: {item.count} • P.B. {item.maxWeight}lb
+        </p>
+      </div>
+      <span className="text-blue-500 text-xs">{expandedLifeSpecies === item.name ? '▲' : '▼'}</span>
+    </button>
+
                 {expandedLifeSpecies === item.name && (
                   <div className="bg-black/30 p-6 pt-0 border-t border-slate-800/50">
                     <p className="text-[8px] font-black text-blue-500 uppercase mb-3 pt-4 tracking-widest">Verified Locations</p>
