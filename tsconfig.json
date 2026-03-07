@@ -1,7 +1,15 @@
 {
   "compilerOptions": {
     "target": "ES2017",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": [
+      "dom", 
+      "dom.iterable", 
+      "esnext", 
+      "webworker" // ⚡️ 1. ADD THIS: Gives TS the ServiceWorker definitions
+    ],
+    "types": [
+      "@serwist/next/typings" // ⚡️ 2. ADD THIS: Loads the Serwist-specific types
+    ],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,

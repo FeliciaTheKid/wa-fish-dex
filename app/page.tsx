@@ -302,7 +302,6 @@ const handleFinalizeSession = async () => {
   
   setLoading(true);
   
-  // 1. Pack the data (This is the "wiring" we did earlier)
   const sessionData = {
     id: currentSessionId,
     location: sessionLocation,
@@ -310,48 +309,31 @@ const handleFinalizeSession = async () => {
     notes: sessionNotes,
     temp: weather.temp,
     wind: weather.wind,
-    cond: weather.cond
+    cond: weather.cond,
+    synced: 0 // ⚡️ Mark as ready for the Sync Manager
   };
 
   try {
-    // ⚡️ 2. SAVE TO LOCAL VAULT FIRST (The "Battery Backup")
-    // If the hike back to the car has no service, the data is safe here.
-    await db.localSessions.add({
-      ...sessionData,
-      synced: 0 // Mark as not yet reached the cloud
-    });
+    // 1. SAVE TO LOCAL VAULT ONLY
+    // We don't call the API here anymore.
+    await db.localSessions.add(sessionData);
 
-    // 3. NOW try to hit the "Grid" (Supabase)
-    const res = await fetch('/api/species/sessions/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(sessionData)
-    });
-
-    if (res.ok) {
-      // 4. If successful, mark the local copy as synced
-      await db.localSessions.update(sessionData.id, { synced: 1 });
-      
-      localStorage.removeItem('active_session_id');
-      localStorage.removeItem('active_session_start');
-      
-      setCurrentSessionId(null);
-      setStartTime(null);
-      setSessionNotes("");
-      await fetchData();
-      setView('home'); 
-    }
-  } catch (e: any) {
-    // 🌲 If this fails (No service on the PCT), the app won't crash!
-    // We just tell the user it's saved locally for now.
-    console.log("Cloud save failed, but trip is safe in the Local Vault.");
-    
-    // Reset the UI anyway so they can start a new trip later
+    // 2. Cleanup UI immediately
     localStorage.removeItem('active_session_id');
     localStorage.removeItem('active_session_start');
+    
     setCurrentSessionId(null);
     setStartTime(null);
-    setView('home');
+    setSessionNotes("");
+    
+    // 3. Trigger the data refresh
+    await fetchData();
+    setView('home'); 
+
+    // ⚡️ The Sync Manager useEffect will see the new '0' and 
+    // push it to the cloud automatically.
+  } catch (e: any) {
+    console.error("Local save failed:", e);
   } finally {
     setLoading(false);
   }
