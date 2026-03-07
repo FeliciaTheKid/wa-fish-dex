@@ -22,7 +22,7 @@ weight: body.weight ? Number(body.weight) : null,
 length: body.length ? Number(body.length) : null,
 date: body.date || new Date().toISOString(),
 location: body.location || 'Unknown',
-session_id: body.sessionId || null
+sessionId: body.sessionId || null
 }])
       .select()
 

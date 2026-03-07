@@ -164,20 +164,21 @@ const fetchData = async () => {
     }
   }, [view]);
 // --- PERSISTENCE EFFECT ---
-// --- PERSISTENCE EFFECT (UPDATED) ---
-  useEffect(() => {
-    const savedId = localStorage.getItem('active_session_id');
-    const savedStart = localStorage.getItem('active_session_start');
+useEffect(() => {
+  const savedId = localStorage.getItem('active_session_id');
+  const savedStart = localStorage.getItem('active_session_start');
 
-    if (savedId && savedStart) {
-      setCurrentSessionId(savedId);
-      setStartTime(parseInt(savedStart));
-      setView('active-session');
-      
-      // 🎣 Pull your catches back down from Supabase on refresh
-      fetchData(); 
-    }
-  }, []);
+  if (savedId && savedStart) {
+    // 1. Set the session ID first
+    setCurrentSessionId(savedId);
+    setStartTime(parseInt(savedStart));
+    setView('active-session');
+    
+    // 2. NOW tell the app to refresh the history from Supabase
+    // This ensures that when the data arrives, the ID is already waiting
+    fetchData(); 
+  }
+}, []);
   // --- HANDLERS ---
 const handleStartSession = () => {
     const newId = crypto.randomUUID();
