@@ -68,10 +68,11 @@ export default function FishDex() {
 
  // --- DATA AGGREGATION ---
  const pendingSyncCount = useMemo(() => {
-  const unsyncedFish = history.filter(f => (f as any).synced === 0).length;
-  const unsyncedSessions = sessionsMetadata.filter(s => s.synced === 0).length;
+  // Ignore items that are in the delete queue!
+  const unsyncedFish = history.filter(f => (f as any).synced === 0 && !deletedSessionIds.includes(f.sessionId)).length;
+  const unsyncedSessions = sessionsMetadata.filter(s => s.synced === 0 && !deletedSessionIds.includes(s.id)).length;
   return unsyncedFish + unsyncedSessions;
-}, [history, sessionsMetadata]);
+}, [history, sessionsMetadata, deletedSessionIds]);
 
 const filteredSpecies = useMemo(() => {
   if (!searchTerm) return ALL_SPECIES.slice(0, 5);
@@ -81,8 +82,8 @@ const filteredSpecies = useMemo(() => {
   const lifeList = useMemo(() => {
   const list: Record<string, { name: string, count: number, maxWeight: number, waters: Set<string> }> = {};
   
-  // Only count fish that are officially part of a session
-  history.filter(fish => fish.sessionId).forEach(fish => {
+  // 👻 FIXED: Filter out fish that belong to a deleted session!
+  history.filter(fish => fish.sessionId && !deletedSessionIds.includes(fish.sessionId)).forEach(fish => {
     if (!list[fish.name]) {
       list[fish.name] = { name: fish.name, count: 0, maxWeight: 0, waters: new Set() };
     }
@@ -92,8 +93,7 @@ const filteredSpecies = useMemo(() => {
   });
   
   return Object.values(list).sort((a, b) => b.count - a.count);
-}, [history]);
-
+}, [history, deletedSessionIds]); // Added deletedSessionIds here!
 const sessionLogs = useMemo(() => {
     const sessions: Record<string, Expedition> = {};
 
@@ -322,26 +322,33 @@ useEffect(() => {
     setStartTime(now);
     setView('active-session');
   }
-
 const handleFinalizeSession = async () => {
   if (!currentSessionId) return;
   
   setLoading(true);
-  
-  const sessionData = {
-    id: currentSessionId,
-    location: sessionLocation,
-    startTime: new Date(startTime!).toISOString(),
-    notes: sessionNotes,
-    temp: weather.temp,
-    wind: weather.wind,
-    cond: weather.cond,
-    synced: 0 // ⚡️ Mark as ready for the Sync Manager
-  };
 
   try {
+    // 🌍 NEW: RETROACTIVELY FIX LOCATIONS
+    // If the location loaded late, update all fish in this session to match the final location
+    const sessionCatches = await db.localSpecies.where('sessionId').equals(currentSessionId).toArray();
+    for (const fish of sessionCatches) {
+      if (fish.location !== sessionLocation) {
+        await db.localSpecies.update(fish.id, { location: sessionLocation, synced: 0 });
+      }
+    }
+
+    const sessionData = {
+      id: currentSessionId,
+      location: sessionLocation,
+      startTime: new Date(startTime!).toISOString(),
+      notes: sessionNotes,
+      temp: weather.temp,
+      wind: weather.wind,
+      cond: weather.cond,
+      synced: 0 // ⚡️ Mark as ready for the Sync Manager
+    };
+
     // 1. SAVE TO LOCAL VAULT ONLY
-    // We don't call the API here anymore.
     await db.localSessions.add(sessionData);
 
     // 2. Cleanup UI immediately
@@ -356,8 +363,6 @@ const handleFinalizeSession = async () => {
     await fetchData();
     setView('home'); 
 
-    // ⚡️ The Sync Manager useEffect will see the new '0' and 
-    // push it to the cloud automatically.
   } catch (e: any) {
     console.error("Local save failed:", e);
   } finally {
@@ -470,11 +475,13 @@ const handleAddCatch = async () => {
       await fetchData();
     }
   };
-
 const handleDeleteSession = async (sessionId: string) => {
     if (!window.confirm("Are you sure you want to delete this entire expedition?")) return;
 
     try {
+      // Get the fish IDs before we clear them from the UI
+      const fishToDelete = history.filter(c => c.sessionId === sessionId).map(c => c.id);
+
       // 1. Purge the local vault
       await db.localSessions.delete(sessionId);
       await db.localSpecies.where('sessionId').equals(sessionId).delete();
@@ -494,6 +501,11 @@ const handleDeleteSession = async (sessionId: string) => {
       if (navigator.onLine) {
         const res = await fetch(`/api/species/delete-session?id=${sessionId}`, { method: 'DELETE' });
         if (res.ok) {
+          // 🚨 FALLBACK: Delete fish individually in case Supabase doesn't cascade delete!
+          for (const fishId of fishToDelete) {
+            fetch(`/api/species/delete?id=${fishId}`, { method: 'DELETE' }).catch(console.error);
+          }
+
           const updatedDeleted = newDeleted.filter(id => id !== sessionId);
           setDeletedSessionIds(updatedDeleted);
           localStorage.setItem('deleted_sessions', JSON.stringify(updatedDeleted));
