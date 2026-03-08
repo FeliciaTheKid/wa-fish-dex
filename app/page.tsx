@@ -55,6 +55,7 @@ export default function FishDex() {
   const [startTime, setStartTime] = useState<number | null>(null)
   const [sessionNotes, setSessionNotes] = useState<string>("");
   const [deletedSessionIds, setDeletedSessionIds] = useState<string[]>([]);
+  const [isEditingLogLocation, setIsEditingLogLocation] = useState(false);
   useEffect(() => {
     setDeletedSessionIds(JSON.parse(localStorage.getItem('deleted_sessions') || '[]'));
   }, []);
@@ -400,6 +401,44 @@ const handleFinalizeSession = async () => {
     setLoading(false);
   }
 };
+const handleUpdateSessionLocation = async (sessionId: string, newLocation: string) => {
+    try {
+      // 1. Update the local metadata state
+      setSessionsMetadata(prev => prev.map(s => 
+        s.id === sessionId ? { ...s, location: newLocation, synced: 0 } : s
+      ));
+
+      // 2. Update all fish in history that belong to this session
+      setHistory(prev => prev.map(f => 
+        f.sessionId === sessionId ? { ...f, location: newLocation, synced: 0 } : f
+      ));
+
+      // 3. Update the database (Dexie)
+      await db.localSessions.update(sessionId, { location: newLocation, synced: 0 });
+      const fishIds = history.filter(f => f.sessionId === sessionId).map(f => f.id);
+      for (const id of fishIds) {
+        await db.localSpecies.update(id, { location: newLocation, synced: 0 } as any);
+      }
+
+      // 4. Close the editor
+      setIsEditingLogLocation(false);
+      
+      // 5. Update the currently viewed session object
+      if (selectedSession) {
+        setSelectedSession({ ...selectedSession, location: newLocation });
+      }
+
+      // 6. Trigger a background sync
+      fetch('/api/species/sessions/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: sessionId, location: newLocation })
+      }).catch(console.error);
+
+    } catch (err) {
+      console.error("Failed to update location:", err);
+    }
+  };
 const handleAddCatch = async () => {
   if (!newName || !currentSessionId) return;
 
@@ -913,8 +952,34 @@ const handleDeleteSession = async (sessionId: string) => {
           <button onClick={() => setView('sessions')} className="mb-8 text-slate-500 font-black uppercase text-[10px] tracking-widest">← Back to Logs</button>
           
           {/* Changed mb-8 to mb-4 below */}
-          <h2 className="text-4xl font-black italic uppercase text-white leading-tight mb-4">{selectedSession.location}</h2>
-          
+          {/* EDITABLE LOCATION HEADER */}
+          {isEditingLogLocation ? (
+            <div className="mb-6 animate-in fade-in zoom-in duration-200">
+              <input
+                autoFocus
+                type="text"
+                defaultValue={selectedSession.location}
+                className="w-full bg-slate-900 border-2 border-blue-500 rounded-2xl p-4 text-2xl font-black italic text-white outline-none mb-2"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleUpdateSessionLocation(selectedSession.id, e.currentTarget.value);
+                  }
+                  if (e.key === 'Escape') setIsEditingLogLocation(false);
+                }}
+              />
+              <p className="text-[10px] font-black uppercase text-slate-500 ml-2">Press Enter to Save • Esc to Cancel</p>
+            </div>
+          ) : (
+            <div 
+              onClick={() => setIsEditingLogLocation(true)}
+              className="group cursor-pointer mb-4"
+            >
+              <h2 className="text-4xl font-black italic uppercase text-white leading-tight group-hover:text-blue-400 transition-colors flex items-center gap-3">
+                {selectedSession.location}
+                <span className="text-xs opacity-0 group-hover:opacity-100 transition-opacity">✏️</span>
+              </h2>
+            </div>
+          )}
           {/* NEW: SAVED WEATHER STRIP */}
           <div className="flex gap-2 mb-8">
             <span className="bg-slate-800 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase text-slate-300">{selectedSession.weather.temp}</span>
