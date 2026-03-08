@@ -21,10 +21,12 @@ export async function POST(req: Request) {
         quantity: Number(body.quantity) || 1,
         weight: body.weight ? Number(body.weight) : null,
         length: body.length ? Number(body.length) : null,
+        // 🎣 ADD THIS LINE HERE:
+        lure: body.lure || null, 
         date: body.date || new Date().toISOString(),
         location: body.location || 'Unknown',
         sessionId: body.sessionId || null,
-        notes: body.notes || '' // 🎣 Added this to match your UI
+        notes: body.notes || '' 
       }])
       .select()
 

@@ -15,14 +15,16 @@ export async function POST(req: Request) {
     const { data, error } = await supabase
       .from('Sessions') 
       .upsert([{
-        id: body.id,                 // Matches 'id' from handleFinalizeSession
+        id: body.id,
         location: body.location || 'Unknown',
         notes: body.notes || '',
-        temp: body.temp || '--',     // Matches the flat 'temp' sent by phone
-        wind: body.wind || '--',     // Matches the flat 'wind' sent by phone
-        cond: body.cond || '--',     // Matches the flat 'cond' sent by phone
-        startTime: body.startTime,   // Already ISO string from the phone
-        endTime: new Date().toISOString()
+        temp: body.temp || '--',
+        wind: body.wind || '--',
+        cond: body.cond || '--',
+        startTime: body.startTime,
+        endTime: new Date().toISOString(),
+        lat: body.lat,
+        lon: body.lon
       }])
       .select()
 

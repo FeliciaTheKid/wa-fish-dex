@@ -158,20 +158,51 @@ const groupedSessionCatches = useMemo(() => {
     });
     return Object.values(groups).sort((a, b) => a.name.localeCompare(b.name));
   }, [history, currentSessionId]);
-  // --- EFFECTS ---
- useEffect(() => {
-  if (!startTime) return; // Don't run if no session is active
   
-  const interval = setInterval(() => {
-    const diff = Date.now() - startTime; 
-    const hours = Math.floor(diff / 3600000);
-    const minutes = Math.floor((diff % 3600000) / 60000);
-    setDisplayTime(hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`);
-  }, 1000);
-  
-  return () => clearInterval(interval);
-}, [startTime]); // Ensure it restarts whenever startTime changes
+ // --- ⏱️ TRIP TIMER EFFECT ---
+  useEffect(() => {
+    if (!startTime) return;
+    const interval = setInterval(() => {
+      const diff = Date.now() - startTime; 
+      const hours = Math.floor(diff / 3600000);
+      const minutes = Math.floor((diff % 3600000) / 60000);
+      setDisplayTime(hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`);
+    }, 1000);
+    return () => clearInterval(interval); // Proper cleanup
+  }, [startTime]);
 
+// --- ⏱️ TRIP TIMER EFFECT ---
+  useEffect(() => {
+    if (!startTime) return;
+    const interval = setInterval(() => {
+      const diff = Date.now() - startTime; 
+      const hours = Math.floor(diff / 3600000);
+      const minutes = Math.floor((diff % 3600000) / 60000);
+      setDisplayTime(hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [startTime]);
+
+  // --- 📍 LOCATION FIX EFFECT ---
+  useEffect(() => {
+    if (currentSessionId && sessionLocation !== "Detecting Location..." && sessionLocation !== "Current Expedition") {
+      const alreadyNamed = history.some(f => 
+        f.sessionId === currentSessionId && 
+        f.location !== "Detecting Location..." && 
+        f.location !== "Current Expedition"
+      );
+
+      if (!alreadyNamed) {
+        setHistory(prev => prev.map(fish => {
+          if (fish.sessionId === currentSessionId && (fish.location === "Detecting Location..." || fish.location === "Current Expedition")) {
+            db.localSpecies.update(fish.id, { location: sessionLocation, synced: 0 }).catch(console.error);
+            return { ...fish, location: sessionLocation, synced: 0 };
+          }
+          return fish;
+        }));
+      }
+    }
+}, [sessionLocation, currentSessionId, history]);
   const updateLocationData = () => {
     if (typeof window !== "undefined" && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(async (pos) => {
@@ -1032,160 +1063,84 @@ const handleDeleteSession = async (sessionId: string) => {
         </main>
       )}
 
-      {view === 'session-detail' && selectedSession && (
-        <main className="max-w-md mx-auto px-6 pt-8 pb-32">
-          <button onClick={() => setView('sessions')} className="mb-8 text-slate-500 font-black uppercase text-[10px] tracking-widest">← Back to Logs</button>
-          {isEditingLogLocation ? (
-            <div className="mb-8 bg-slate-900/90 p-5 rounded-[2.5rem] border border-blue-500 shadow-2xl animate-in fade-in zoom-in duration-200">
-              <div className="flex justify-between items-center mb-3">
-                <p className="text-[9px] font-black text-blue-500 uppercase tracking-widest">Update Location</p>
-                <button onClick={() => setIsEditingLogLocation(false)} className="text-[10px] text-slate-500 uppercase font-black">Cancel</button>
-              </div>
-
-              {/* 🌊 SMART SUGGESTIONS BASED ON TRIP GPS */}
-              <div className="mb-4">
-                <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-2">Waters Near This Trip</p>
-                <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto pr-1">
-                  {/* We use the coordinates saved in the selectedSession object */}
-                  {getWaterWithinRadius(selectedSession.lat || 0, selectedSession.lon || 0, 5).length > 0 ? (
-                    getWaterWithinRadius(selectedSession.lat || 0, selectedSession.lon || 0, 5).map(waterName => (
-                      <button
-                        key={waterName}
-                        onClick={() => handleUpdateSessionLocation(selectedSession.id, waterName)}
-                        className="w-full text-left p-3 rounded-xl bg-slate-800 hover:bg-blue-600/20 border border-slate-700 hover:border-blue-500/50 transition-all text-[11px] font-black text-white uppercase italic"
-                      >
-                        {waterName}
-                      </button>
-                    ))
-                  ) : (
-                    <p className="text-[10px] text-slate-600 italic px-2 font-bold">No nearby water data found for these coordinates.</p>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <input
-                  autoFocus
-                  id="manualLocationInput"
-                  type="text"
-                  placeholder="Or type custom name..."
-                  defaultValue={selectedSession.location === "Detecting Location..." ? "" : selectedSession.location}
-                  className="flex-1 bg-[#020617] border border-slate-800 rounded-xl p-4 text-sm text-white outline-none focus:border-blue-500/50"
-                />
-                <button 
-                  onClick={() => {
-                    const val = (document.getElementById('manualLocationInput') as HTMLInputElement).value;
-                    handleUpdateSessionLocation(selectedSession.id, val);
-                  }}
-                  className="bg-blue-600 px-6 rounded-xl font-black text-[10px] uppercase text-white shadow-lg active:scale-95"
-                >
-                  Save
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div onClick={() => setIsEditingLogLocation(true)} className="group cursor-pointer mb-4">
-              <h2 className="text-4xl font-black italic uppercase text-white leading-tight group-hover:text-blue-400 transition-colors flex items-center gap-3">
-                {selectedSession.location}
-                <span className="text-xs opacity-40">✏️</span>
-              </h2>
-              <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-1">Tap title to rename spot</p>
-            </div>
-          )}
-          {/* NEW: SAVED WEATHER STRIP */}
-          <div className="flex gap-2 mb-8">
-            <span className="bg-slate-800 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase text-slate-300">{selectedSession.weather.temp}</span>
-            <span className="bg-slate-800 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase text-slate-300">{selectedSession.weather.wind}</span>
-            <span className="bg-slate-800 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase text-slate-300">{selectedSession.weather.cond}</span>
-          </div>
-
-          <div className="bg-slate-900 rounded-[2.5rem] p-6 border border-slate-800 mb-8">
-            <p className="text-[9px] font-black text-slate-500 uppercase mb-3 tracking-widest">Expedition Notes</p>
-            <textarea 
-              value={selectedSession.notes}
-              onChange={(e) => setSelectedSession({...selectedSession, notes: e.target.value})}
-              className="w-full h-32 bg-transparent text-sm text-slate-300 outline-none resize-none"
-            />
-          </div>
-
-          <p className="text-[9px] font-black text-slate-500 uppercase mb-4 tracking-widest">Logged Catches</p>
-          <div className="space-y-2 mb-12">
-           {selectedSession.catches.map(fish => (
-  <div key={fish.id} className="bg-slate-900/50 rounded-2xl border border-slate-800 overflow-hidden">
-    <button 
-      onClick={() => setExpandedLogCatch(expandedLogCatch === fish.id ? null : fish.id)} 
-      className="w-full p-4 flex justify-between items-center text-left"
-    >
-      <span className="font-black text-[11px] uppercase tracking-tighter text-white">{fish.name}</span>
-      <div className="flex items-center gap-3">
-        {fish.media && fish.media.length > 0 && <span className="text-[10px]">📷</span>}
-        
-        {/* THIS IS YOUR NEW LINE */}
-        <span className="text-[10px] text-slate-400 font-bold">{fish.weight}lb • {fish.length}in {fish.lure && `• 🎣 ${fish.lure}`}</span>
-        
+     {view === 'session-detail' && selectedSession && (
+  <main className="max-w-md mx-auto px-6 pt-8 pb-32">
+    <button onClick={() => setView('sessions')} className="mb-8 text-slate-500 font-black uppercase text-[10px] tracking-widest">← Back to Logs</button>
+    
+    {/* ⏱️ TRIP TIME & DURATION */}
+    <div className="mb-6">
+      <h2 className="text-4xl font-black italic uppercase text-white leading-tight">
+        {selectedSession.location}
+      </h2>
+      <div className="mt-2 flex flex-col">
+        <span className="text-lg font-black text-blue-500 italic uppercase">
+          {/* Calculate duration based on catches or metadata */}
+          {selectedSession.catches.length > 0 ? 'Expedition Complete' : 'Scouting Trip'}
+        </span>
+        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+          Started {new Date(selectedSession.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {new Date(selectedSession.date).toLocaleDateString()}
+        </span>
       </div>
-    </button>
-    {/* ... expanded media area ... */}
-                {/* Expanded area: Image upload & Delete Catch */}
-                {expandedLogCatch === fish.id && (
-                  <div className="p-4 pt-0 border-t border-slate-800/50 mt-2">
-                    <p className="text-[8px] font-black text-slate-500 uppercase mb-3 pt-4 tracking-widest">Media Record</p>
-                    
-                    {fish.media && fish.media.length > 0 && (
-                      <div className="flex gap-2 overflow-x-auto mb-3 pb-2">
-                        {fish.media.map((url, i) => (
-                           // eslint-disable-next-line @next/next/no-img-element
-                         <img 
-  key={i} 
-  src={url} 
-  alt="Catch" 
-  onClick={() => setFullscreenImage({ url, catchId: fish.id })}
-  className="h-16 w-16 object-cover rounded-lg border border-slate-700 cursor-pointer hover:opacity-80 transition-opacity" 
-/>
-                        ))}
-                      </div>
-                    )}
+    </div>
 
-                    <div className="flex items-center gap-2 mt-4">
-                      <label className="flex-1 flex items-center justify-center gap-2 bg-slate-800/50 py-3 rounded-xl border border-dashed border-slate-700 cursor-pointer hover:bg-slate-800 transition-colors">
-                        <span className="text-[10px] font-black uppercase text-blue-500">+ Upload Photo</span>
-                        <input 
-                          type="file" 
-                          accept="image/*" 
-                          className="hidden" 
-                          onChange={(e) => {
-                            if (e.target.files && e.target.files[0]) {
-                              handleImageUpload(fish.id, e.target.files[0]);
-                            }
-                          }}
-                        />
-                      </label>
-                      <button 
-                        onClick={() => handleDeleteCatch(fish.id)} 
-                        className="flex-1 flex items-center justify-center bg-red-500/10 py-3 rounded-xl border border-dashed border-red-500/30 hover:bg-red-500/20 transition-colors"
-                      >
-                        <span className="text-[10px] font-black uppercase text-red-500">Delete Specimen</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-            {selectedSession.catches.length === 0 && (
-               <p className="text-[10px] text-slate-600 uppercase font-black text-center py-4">No specimens in this log.</p>
-            )}
+    {/* 🎣 1. LOGGED CATCHES (Moved to top) */}
+    <p className="text-[9px] font-black text-slate-500 uppercase mb-4 tracking-widest">Logged Catches</p>
+    <div className="space-y-2 mb-8">
+      {selectedSession.catches.map(fish => (
+        <div key={fish.id} className="bg-slate-900/50 rounded-2xl border border-slate-800 overflow-hidden">
+          <div className="p-4 flex justify-between items-center">
+            <div>
+              <span className="font-black text-[11px] uppercase tracking-tighter text-white block">{fish.name}</span>
+              <span className="text-[10px] text-slate-400 font-bold">
+                {fish.weight}lb • {fish.length}in {fish.lure && ` • 🎣 ${fish.lure}`}
+              </span>
+            </div>
+            {fish.media && fish.media.length > 0 && <span className="text-lg">📷</span>}
           </div>
+        </div>
+      ))}
+    </div>
 
-          {/* Delete Entire Session Button */}
-          <button 
-            onClick={() => handleDeleteSession(selectedSession.id)} 
-            className="w-full py-5 text-[10px] font-black uppercase text-red-400 border border-red-500/20 rounded-2xl bg-red-500/5 hover:bg-red-500/10 transition-colors"
+    {/* 📝 2. EXPEDITION NOTES */}
+    <div className="bg-slate-900 rounded-[2.5rem] p-6 border border-slate-800 mb-8">
+      <p className="text-[9px] font-black text-slate-500 uppercase mb-3 tracking-widest">Expedition Notes</p>
+      <textarea 
+        value={selectedSession.notes}
+        onChange={(e) => setSelectedSession({...selectedSession, notes: e.target.value})}
+        className="w-full h-32 bg-transparent text-sm text-slate-300 outline-none resize-none"
+      />
+    </div>
+
+{/* 🗺️ 3. THE NAVIGATOR MAP */}
+    {selectedSession.lat && selectedSession.lon && (
+      <div className="mb-10">
+        <p className="text-[9px] font-black text-slate-500 uppercase mb-3 tracking-widest">Deployment Location</p>
+        <div className="relative w-full h-48 rounded-[2rem] overflow-hidden border border-slate-800 shadow-2xl group">
+          <iframe 
+            width="100%" 
+            height="100%" 
+            frameBorder="0" 
+            style={{ border: 0, filter: 'invert(90%) hue-rotate(180deg) brightness(0.8)' }}
+            src={`https://www.google.com/maps/embed/v1/view?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY}&center=${selectedSession.lat},${selectedSession.lon}&zoom=15&maptype=satellite`}
+            allowFullScreen
+          ></iframe>
+          <a 
+            href={`https://www.google.com/maps/search/?api=1&query=${selectedSession.lat},${selectedSession.lon}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="absolute bottom-4 right-4 bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg active:scale-95 transition-all"
           >
-            Delete Entire Expedition
-          </button>
-        </main>
-      )}
+            Navigate with Google Maps ↗
+          </a>
+        </div>
+      </div>
+    )}
 
+   <button onClick={() => handleDeleteSession(selectedSession.id)} className="w-full py-5 text-[10px] font-black uppercase text-red-400 border border-red-500/20 rounded-2xl bg-red-500/5">
+      Delete Expedition
+    </button>
+  </main>
+)} 
       {/* 5. RECORD CATCH DRAWER */}
       {showAddDrawer && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 backdrop-blur-sm">
