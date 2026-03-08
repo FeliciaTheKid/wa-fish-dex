@@ -1,14 +1,26 @@
-'use client'
+  'use client'
 
 import { getNearestWater, getWaterWithinRadius, calculateDistance } from "@/lib/utils";
 import { useState, useEffect, useMemo } from 'react'
 import { ALL_SPECIES, FISH_GUIDE } from '@/lib/species-db'
 import { db } from '../lib/db';
 
+// 1. HELPERS (Defined ONCE outside the component)
+const calculateDuration = (start: string, end?: string) => {
+  if (!start) return "0m";
+  const startTime = new Date(start).getTime();
+  const endTime = end ? new Date(end).getTime() : Date.now();
+  const diff = endTime - startTime;
+  const hours = Math.floor(diff / 3600000);
+  const minutes = Math.floor((diff % 3600000) / 60000);
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+};
+
 const getWindDirection = (deg: number) => {
   const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
   return directions[Math.round(deg / 45) % 8];
 }
+
 type View = 'home' | 'lifelist' | 'sessions' | 'active-session' | 'summary' | 'session-detail'
 
 interface Catch {
@@ -23,6 +35,7 @@ interface Catch {
   synced: number;
   media?: string[];
 }
+
 interface Expedition {
   id: string;
   location: string;
@@ -36,7 +49,7 @@ interface Expedition {
 }
 
 export default function FishDex() {
- const [view, setView] = useState<View>('home')
+  const [view, setView] = useState<View>('home')
   const [loading, setLoading] = useState(false)
   const [expandedLifeSpecies, setExpandedLifeSpecies] = useState<string | null>(null)
   
@@ -159,29 +172,6 @@ const groupedSessionCatches = useMemo(() => {
     return Object.values(groups).sort((a, b) => a.name.localeCompare(b.name));
   }, [history, currentSessionId]);
   
- // --- ⏱️ TRIP TIMER EFFECT ---
-  useEffect(() => {
-    if (!startTime) return;
-    const interval = setInterval(() => {
-      const diff = Date.now() - startTime; 
-      const hours = Math.floor(diff / 3600000);
-      const minutes = Math.floor((diff % 3600000) / 60000);
-      setDisplayTime(hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`);
-    }, 1000);
-    return () => clearInterval(interval); // Proper cleanup
-  }, [startTime]);
-
-// --- ⏱️ TRIP TIMER EFFECT ---
-  useEffect(() => {
-    if (!startTime) return;
-    const interval = setInterval(() => {
-      const diff = Date.now() - startTime; 
-      const hours = Math.floor(diff / 3600000);
-      const minutes = Math.floor((diff % 3600000) / 60000);
-      setDisplayTime(hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [startTime]);
 
   // --- 📍 LOCATION FIX EFFECT ---
   useEffect(() => {
@@ -900,12 +890,17 @@ const handleDeleteSession = async (sessionId: string) => {
         </main>
       )}
      {/* EXPEDITION SUMMARY (REVIEW AFTER) */}
-      {view === 'summary' && (
-        <main className="max-w-md mx-auto px-6 pt-12 pb-32 animate-in fade-in zoom-in duration-300">
-          <h2 className="text-5xl font-black italic uppercase text-white mb-2 tracking-tighter">Expedition<br/>Review</h2>
-          <p className="text-blue-500 font-black text-[10px] uppercase mb-4 tracking-[0.2em]">{sessionLocation}</p>
-
-          {/* NEW: WEATHER STRIP */}
+    {view === 'summary' && (
+  <main className="max-w-md mx-auto px-6 pt-12 pb-32 animate-in fade-in zoom-in duration-300">
+    <div className="flex justify-between items-start mb-2">
+      <h2 className="text-5xl font-black italic uppercase text-white tracking-tighter leading-[0.9]">Expedition<br/>Review</h2>
+      <div className="bg-blue-600 px-4 py-2 rounded-2xl text-center shadow-lg border-b-4 border-blue-800">
+        <p className="text-[8px] font-black uppercase text-blue-200">Total Time</p>
+        <p className="text-xl font-black italic text-white leading-none">{displayTime}</p>
+      </div>
+    </div>
+    <p className="text-blue-500 font-black text-[10px] uppercase mb-8 tracking-[0.2em]">{sessionLocation}</p>
+              {/* NEW: WEATHER STRIP */}
           <div className="flex gap-2 mb-8">
             <span className="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase text-slate-300">{weather.temp}</span>
             <span className="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase text-slate-300">{weather.wind}</span>
@@ -1062,33 +1057,56 @@ const handleDeleteSession = async (sessionId: string) => {
           </div>
         </main>
       )}
-
-     {view === 'session-detail' && selectedSession && (
+{view === 'session-detail' && selectedSession && (
   <main className="max-w-md mx-auto px-6 pt-8 pb-32">
     <button onClick={() => setView('sessions')} className="mb-8 text-slate-500 font-black uppercase text-[10px] tracking-widest">← Back to Logs</button>
     
-    {/* ⏱️ TRIP TIME & DURATION */}
-    <div className="mb-6">
-      <h2 className="text-4xl font-black italic uppercase text-white leading-tight">
-        {selectedSession.location}
-      </h2>
-      <div className="mt-2 flex flex-col">
-        <span className="text-lg font-black text-blue-500 italic uppercase">
-          {/* Calculate duration based on catches or metadata */}
-          {selectedSession.catches.length > 0 ? 'Expedition Complete' : 'Scouting Trip'}
+    {/* ⏱️ TRIP HEADER & LOCATION EDITING */}
+    <div className="mb-8">
+      {isEditingLogLocation ? (
+        <div className="flex gap-2 animate-in fade-in zoom-in duration-200">
+          <input
+            id="editLocationInput"
+            autoFocus
+            className="flex-1 bg-slate-900 border border-blue-500 rounded-xl p-4 text-white text-sm outline-none"
+            defaultValue={selectedSession.location}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleUpdateSessionLocation(selectedSession.id, e.currentTarget.value);
+            }}
+          />
+          <button 
+            onClick={() => {
+              const val = (document.getElementById('editLocationInput') as HTMLInputElement).value;
+              handleUpdateSessionLocation(selectedSession.id, val);
+            }}
+            className="bg-blue-600 px-6 rounded-xl font-black text-[10px] uppercase text-white"
+          >Save</button>
+        </div>
+      ) : (
+        <h2 onClick={() => setIsEditingLogLocation(true)} className="text-4xl font-black italic uppercase text-white leading-tight cursor-pointer hover:text-blue-400 transition-colors group">
+          {selectedSession.location} <span className="text-xs opacity-30 group-hover:opacity-100 transition-opacity">✏️</span>
+        </h2>
+      )}
+      
+      <div className="mt-3 flex items-center gap-3">
+        <span className="bg-slate-800 text-slate-300 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest border border-slate-700">
+          Duration: {calculateDuration(selectedSession.date, (selectedSession as any).endTime)}
         </span>
-        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-          Started {new Date(selectedSession.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {new Date(selectedSession.date).toLocaleDateString()}
+        <span className="text-[10px] font-bold text-slate-500 uppercase">
+          {new Date(selectedSession.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {new Date(selectedSession.date).toLocaleDateString()}
         </span>
       </div>
     </div>
 
-    {/* 🎣 1. LOGGED CATCHES (Moved to top) */}
+    {/* 🎣 LOGGED CATCHES */}
     <p className="text-[9px] font-black text-slate-500 uppercase mb-4 tracking-widest">Logged Catches</p>
     <div className="space-y-2 mb-8">
       {selectedSession.catches.map(fish => (
         <div key={fish.id} className="bg-slate-900/50 rounded-2xl border border-slate-800 overflow-hidden">
-          <div className="p-4 flex justify-between items-center">
+          <button 
+            onClick={() => setExpandedLogCatch(expandedLogCatch === fish.id ? null : fish.id)} 
+            className="w-full p-4 flex justify-between items-center text-left"
+          >
             <div>
               <span className="font-black text-[11px] uppercase tracking-tighter text-white block">{fish.name}</span>
               <span className="text-[10px] text-slate-400 font-bold">
@@ -1096,39 +1114,30 @@ const handleDeleteSession = async (sessionId: string) => {
               </span>
             </div>
             {fish.media && fish.media.length > 0 && <span className="text-lg">📷</span>}
-          </div>
+          </button>
         </div>
       ))}
     </div>
 
-    {/* 📝 2. EXPEDITION NOTES */}
-    <div className="bg-slate-900 rounded-[2.5rem] p-6 border border-slate-800 mb-8">
-      <p className="text-[9px] font-black text-slate-500 uppercase mb-3 tracking-widest">Expedition Notes</p>
-      <textarea 
-        value={selectedSession.notes}
-        onChange={(e) => setSelectedSession({...selectedSession, notes: e.target.value})}
-        className="w-full h-32 bg-transparent text-sm text-slate-300 outline-none resize-none"
-      />
-    </div>
-
-{/* 🗺️ 3. THE NAVIGATOR MAP */}
+    {/* 🗺️ FREE SATELLITE MAP (Leaflet + Esri) */}
     {selectedSession.lat && selectedSession.lon && (
       <div className="mb-10">
         <p className="text-[9px] font-black text-slate-500 uppercase mb-3 tracking-widest">Deployment Location</p>
-        <div className="relative w-full h-48 rounded-[2rem] overflow-hidden border border-slate-800 shadow-2xl group">
+        <div className="relative w-full h-56 rounded-[2rem] overflow-hidden border border-slate-800 shadow-2xl bg-slate-900">
           <iframe 
             width="100%" 
             height="100%" 
             frameBorder="0" 
-            style={{ border: 0, filter: 'invert(90%) hue-rotate(180deg) brightness(0.8)' }}
-            src={`https://www.google.com/maps/embed/v1/view?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY}&center=${selectedSession.lat},${selectedSession.lon}&zoom=15&maptype=satellite`}
-            allowFullScreen
+            title="Satellite Map"
+            style={{ border: 0, filter: 'brightness(0.8) contrast(1.2)' }}
+            src={`https://www.openstreetmap.org/export/embed.html?bbox=${selectedSession.lon - 0.005},${selectedSession.lat - 0.005},${selectedSession.lon + 0.005},${selectedSession.lat + 0.005}&layer=mapnik&marker=${selectedSession.lat},${selectedSession.lon}`}
           ></iframe>
+          
           <a 
-            href={`https://www.google.com/maps/search/?api=1&query=${selectedSession.lat},${selectedSession.lon}`}
+          href={`https://www.google.com/maps/search/?api=1&query=${selectedSession.lat},${selectedSession.lon}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="absolute bottom-4 right-4 bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg active:scale-95 transition-all"
+            className="absolute bottom-4 right-4 bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg active:scale-95 transition-all border-b-4 border-blue-800"
           >
             Navigate with Google Maps ↗
           </a>
@@ -1136,11 +1145,12 @@ const handleDeleteSession = async (sessionId: string) => {
       </div>
     )}
 
-   <button onClick={() => handleDeleteSession(selectedSession.id)} className="w-full py-5 text-[10px] font-black uppercase text-red-400 border border-red-500/20 rounded-2xl bg-red-500/5">
+    <button onClick={() => handleDeleteSession(selectedSession.id)} className="w-full py-5 text-[10px] font-black uppercase text-red-400 border border-red-500/20 rounded-2xl bg-red-500/5 hover:bg-red-500/10 transition-colors">
       Delete Expedition
     </button>
   </main>
-)} 
+)}
+
       {/* 5. RECORD CATCH DRAWER */}
       {showAddDrawer && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 backdrop-blur-sm">
