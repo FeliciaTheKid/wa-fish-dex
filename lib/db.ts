@@ -1,15 +1,15 @@
 import Dexie, { type Table } from 'dexie';
 
-// Define the structure of our local vault
 export interface LocalCatch {
   id: string;
   name: string;
   weight: number;
   length: number;
+  lure?: string; // 🎣 Add this line!
   date: string;
   location: string;
   sessionId: string;
-  synced: number; // 0 for no, 1 for yes (easier for indexing)
+  synced: number; 
 }
 
 export interface LocalSession {
@@ -21,6 +21,8 @@ export interface LocalSession {
   temp: string;
   wind: string;
   cond: string;
+  lat: number | null;
+  lon: number | null; 
   synced: number; 
 }
 
@@ -30,10 +32,12 @@ export class OfflineVault extends Dexie {
 
   constructor() {
     super('EFishVault');
-    // Define the "Primary Keys" (the id) and what we want to search by (synced)
-    this.version(1).stores({
+    
+    // We bump this to version 2 because we are adding new columns
+    this.version(2).stores({
       localSpecies: 'id, sessionId, synced',
-      localSessions: 'id, synced'
+      // 📍 Added lat and lon to the session store
+      localSessions: 'id, synced, lat, lon' 
     });
   }
 }

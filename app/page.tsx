@@ -23,7 +23,6 @@ interface Catch {
   synced: number;
   media?: string[];
 }
-
 interface Expedition {
   id: string;
   location: string;
@@ -31,6 +30,8 @@ interface Expedition {
   catches: Catch[];
   notes: string;
   weather: { temp: string, wind: string, cond: string };
+  lat?: number;
+  lon?: number; 
   media?: string[];
 }
 
@@ -47,7 +48,8 @@ export default function FishDex() {
   const [isEditingLocation, setIsEditingLocation] = useState(false);
   const [nearbyWaters, setNearbyWaters] = useState<{name: string, dist: number}[]>([]);
   const [weather, setWeather] = useState({ temp: '--', wind: '--', cond: 'Loading...' });
-
+  const [sessionLat, setSessionLat] = useState<number | null>(null);
+  const [sessionLon, setSessionLon] = useState<number | null>(null);
   // --- SESSION STATE ---
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [selectedSession, setSelectedSession] = useState<Expedition | null>(null)
@@ -83,29 +85,46 @@ const filteredSpecies = useMemo(() => {
   return ALL_SPECIES.filter(s => s.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 5);
 }, [searchTerm]);
 
-  const lifeList = useMemo(() => {
-  const list: Record<string, { name: string, count: number, maxWeight: number, waters: Set<string> }> = {};
-  
-  // 👻 FIXED: Filter out fish that belong to a deleted session!
-  history.filter(fish => fish.sessionId && !deletedSessionIds.includes(fish.sessionId)).forEach(fish => {
-    if (!list[fish.name]) {
-      list[fish.name] = { name: fish.name, count: 0, maxWeight: 0, waters: new Set() };
-    }
-    list[fish.name].count++;
-    list[fish.name].waters.add(fish.location);
-    if (fish.weight > list[fish.name].maxWeight) list[fish.name].maxWeight = fish.weight;
-  });
-  
-  return Object.values(list).sort((a, b) => b.count - a.count);
-}, [history, deletedSessionIds]); // Added deletedSessionIds here!
+const lifeList = useMemo(() => {
+    const list: Record<string, { 
+      name: string, 
+      count: number, 
+      maxWeight: number, 
+      waters: Set<string>,
+      lureCounts: Record<string, number> // 🎣 New: Track lure frequency
+    }> = {};
+    
+    // Filter out fish that belong to a deleted session
+    history.filter(fish => fish.sessionId && !deletedSessionIds.includes(fish.sessionId)).forEach(fish => {
+      if (!list[fish.name]) {
+        list[fish.name] = { 
+          name: fish.name, 
+          count: 0, 
+          maxWeight: 0, 
+          waters: new Set(),
+          lureCounts: {} 
+        };
+      }
+      
+      const entry = list[fish.name];
+      entry.count++;
+      entry.waters.add(fish.location);
+      if (fish.weight > entry.maxWeight) entry.maxWeight = fish.weight;
+      
+      // 🎣 Count the lure if it exists
+      if (fish.lure) {
+        entry.lureCounts[fish.lure] = (entry.lureCounts[fish.lure] || 0) + 1;
+      }
+    });
+    
+    return Object.values(list).sort((a, b) => b.count - a.count);
+  }, [history, deletedSessionIds]);
 const sessionLogs = useMemo(() => {
     const sessions: Record<string, Expedition> = {};
 
     history.forEach(f => {
-      // Hide the ghosts! If it has no ID, or if the ID is in our delete queue, skip it.
       if (!f.sessionId || deletedSessionIds.includes(f.sessionId)) return; 
       
-      // Look for real metadata (weather/notes) for this session
       const meta = sessionsMetadata.find(m => m.id === f.sessionId);
       if (!sessions[f.sessionId]) {
         sessions[f.sessionId] = { 
@@ -113,21 +132,23 @@ const sessionLogs = useMemo(() => {
           location: f.location, 
           date: f.date, 
           catches: [], 
-          // Use real notes from DB, or fallback to placeholder
           notes: meta?.notes || "No notes recorded.", 
-          // Use real weather from DB, or fallback to placeholder
           weather: { 
             temp: meta?.temp || '52°F', 
             wind: meta?.wind || '6mph S', 
             cond: meta?.cond || 'Overcast' 
-          } 
+          },
+          // 📍 ADD THESE TWO LINES HERE:
+          lat: meta?.lat, 
+          lon: meta?.lon
         };
       }
       sessions[f.sessionId].catches.push(f);
     });
 
     return Object.values(sessions).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [history, sessionsMetadata]);
+  }, [history, sessionsMetadata, deletedSessionIds]);
+
 const groupedSessionCatches = useMemo(() => {
     const sessionHistory = history.filter(h => currentSessionId && h.sessionId === currentSessionId);
     const groups: Record<string, { name: string, items: Catch[] }> = {};
@@ -152,10 +173,14 @@ const groupedSessionCatches = useMemo(() => {
 }, [startTime]); // Ensure it restarts whenever startTime changes
 
   const updateLocationData = () => {
-  if (typeof window !== "undefined" && navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      const { latitude: lat, longitude: lon } = pos.coords;
-      
+    if (typeof window !== "undefined" && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const { latitude: lat, longitude: lon } = pos.coords;
+        
+        // 📍 NEW: Store raw coordinates for the session
+        setSessionLat(lat);
+        setSessionLon(lon);
+
       // 1. Existing Water Detection (Changed to 5 mile radius)
       const nearby = getWaterWithinRadius(lat, lon, 5).map((name: string) => ({
         name,
@@ -371,7 +396,7 @@ const handleFinalizeSession = async () => {
       }
     }
 
-    const sessionData = {
+  const sessionData = {
       id: currentSessionId,
       location: sessionLocation,
       startTime: new Date(startTime!).toISOString(),
@@ -379,7 +404,9 @@ const handleFinalizeSession = async () => {
       temp: weather.temp,
       wind: weather.wind,
       cond: weather.cond,
-      synced: 0 // ⚡️ Mark as ready for the Sync Manager
+      lat: sessionLat, // 📍 Ensure this is included
+      lon: sessionLon, // 📍 Ensure this is included
+      synced: 0 
     };
 
     // 1. SAVE TO LOCAL VAULT ONLY
@@ -795,7 +822,7 @@ const handleDeleteSession = async (sessionId: string) => {
                                     <div key={fish.id} className="flex justify-between items-center bg-slate-800/30 p-3 rounded-xl border border-slate-800/50">
                                         <div>
                                             <p className="text-[10px] font-bold text-white uppercase">
-                                              Catch #{group.items.length - index} <span className="text-slate-500 mx-1">•</span> {fish.weight}lb <span className="text-slate-500 mx-1">•</span> {fish.length}in
+                                            Catch #{group.items.length - index} <span className="text-slate-500 mx-1">•</span> {fish.weight}lb {fish.lure && `• 🎣 ${fish.lure}`}
                                             </p>
                                             <p className="text-[8px] text-slate-400 uppercase mt-0.5">
                                               {new Date(fish.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -895,31 +922,49 @@ const handleDeleteSession = async (sessionId: string) => {
           <button onClick={() => setView('home')} className="mb-8 text-slate-500 font-black uppercase text-[10px] tracking-widest">← Dashboard</button>
           <h2 className="text-5xl font-black italic uppercase mb-2 tracking-tighter text-white">Life List</h2>
           <p className="text-blue-500 font-black text-[10px] uppercase mb-10">{lifeList.length} Species Found</p>
-          <div className="space-y-3">
-           {lifeList.map(item => (
-  <div key={item.name} className="bg-slate-900 rounded-[2rem] border border-slate-800 overflow-hidden shadow-lg">
-    <button onClick={() => setExpandedLifeSpecies(expandedLifeSpecies === item.name ? null : item.name)} className="w-full p-6 flex justify-between items-center text-left">
-      <div>
-        <div className="flex items-center gap-2 mb-1">
-          <p className="text-xs font-black uppercase tracking-widest text-white">{item.name}</p>
           
-          {/* 🎣 The Sync Badge: Checks if any fish in history with this name are unsynced */}
-          {history.some(f => f.name === item.name && (f as any).synced === 0) && (
-            <span className="text-[7px] font-black uppercase px-1.5 py-0.5 bg-amber-500/20 text-amber-500 border border-amber-500/30 rounded animate-pulse">
-              Waiting to Sync
-            </span>
-          )}
-        </div>
-        <p className="text-[9px] font-bold text-slate-500 uppercase">
-          Total: {item.count} • P.B. {item.maxWeight}lb
-        </p>
-      </div>
-      <span className="text-blue-500 text-xs">{expandedLifeSpecies === item.name ? '▲' : '▼'}</span>
-    </button>
+          <div className="space-y-3">
+            {lifeList.map(item => (
+              <div key={item.name} className="bg-slate-900 rounded-[2rem] border border-slate-800 overflow-hidden shadow-lg">
+                <button onClick={() => setExpandedLifeSpecies(expandedLifeSpecies === item.name ? null : item.name)} className="w-full p-6 flex justify-between items-center text-left">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <p className="text-xs font-black uppercase tracking-widest text-white">{item.name}</p>
+                      {history.some(f => f.name === item.name && (f as any).synced === 0) && (
+                        <span className="text-[7px] font-black uppercase px-1.5 py-0.5 bg-amber-500/20 text-amber-500 border border-amber-500/30 rounded animate-pulse">
+                          Waiting to Sync
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[9px] font-bold text-slate-500 uppercase">
+                      Total: {item.count} • P.B. {item.maxWeight}lb
+                    </p>
+                  </div>
+                  <span className="text-blue-500 text-xs">{expandedLifeSpecies === item.name ? '▲' : '▼'}</span>
+                </button>
 
                 {expandedLifeSpecies === item.name && (
                   <div className="bg-black/30 p-6 pt-0 border-t border-slate-800/50">
-                    <p className="text-[8px] font-black text-blue-500 uppercase mb-3 pt-4 tracking-widest">Verified Locations</p>
+                    {/* 🎣 TOP PATTERN SECTION */}
+                    <p className="text-[8px] font-black text-amber-500 uppercase mb-3 pt-4 tracking-widest text-center">Top Pattern</p>
+                    <div className="flex flex-col items-center mb-6">
+                      {Object.keys(item.lureCounts).length > 0 ? (
+                        (() => {
+                          const topLure = Object.entries(item.lureCounts).sort((a, b) => b[1] - a[1])[0];
+                          return (
+                            <div className="bg-slate-800/50 border border-slate-700 px-6 py-4 rounded-2xl text-center w-full">
+                              <span className="text-xl mb-1 block">🎣</span>
+                              <p className="text-sm font-black text-white uppercase italic">{topLure[0]}</p>
+                              <p className="text-[9px] font-bold text-slate-500 uppercase mt-1">{topLure[1]} Specimens Landed</p>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <p className="text-[10px] text-slate-600 font-bold uppercase tracking-tighter">No lure data recorded.</p>
+                      )}
+                    </div>
+
+                    <p className="text-[8px] font-black text-blue-500 uppercase mb-3 tracking-widest">Verified Locations</p>
                     <div className="space-y-2">
                       {Array.from(item.waters).map(water => (
                         <div key={water} className="flex items-center gap-2 text-[10px] font-black uppercase text-slate-400">
@@ -934,7 +979,7 @@ const handleDeleteSession = async (sessionId: string) => {
           </div>
         </main>
       )}
-
+      
       {/* 4. LOG BOOK & DETAIL */}
       {view === 'sessions' && (
         <main className="max-w-md mx-auto px-6 pt-8 pb-32">
@@ -968,57 +1013,56 @@ const handleDeleteSession = async (sessionId: string) => {
       {view === 'session-detail' && selectedSession && (
         <main className="max-w-md mx-auto px-6 pt-8 pb-32">
           <button onClick={() => setView('sessions')} className="mb-8 text-slate-500 font-black uppercase text-[10px] tracking-widest">← Back to Logs</button>
-          {/* 📱 MOBILE-FRIENDLY EDITABLE LOCATION HEADER */}
           {isEditingLogLocation ? (
-            <div className="mb-8 bg-slate-900/80 p-5 rounded-[2rem] border border-blue-500 shadow-2xl animate-in fade-in zoom-in duration-200">
+            <div className="mb-8 bg-slate-900/90 p-5 rounded-[2.5rem] border border-blue-500 shadow-2xl animate-in fade-in zoom-in duration-200">
               <div className="flex justify-between items-center mb-3">
                 <p className="text-[9px] font-black text-blue-500 uppercase tracking-widest">Update Location</p>
                 <button onClick={() => setIsEditingLogLocation(false)} className="text-[10px] text-slate-500 uppercase font-black">Cancel</button>
               </div>
 
-              {/* Suggestions from the GPS/Weather Data */}
-              {nearbyWaters.length > 0 && (
-                <div className="mb-4 space-y-2">
-                  <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1">Suggestions Near Here</p>
-                  <div className="flex flex-wrap gap-2">
-                    {nearbyWaters.slice(0, 3).map(water => (
-                      <button 
-                        key={water.name}
-                        onClick={() => handleUpdateSessionLocation(selectedSession.id, water.name)}
-                        className="bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-xl text-[10px] font-black text-white border border-slate-700 transition-colors"
+              {/* 🌊 SMART SUGGESTIONS BASED ON TRIP GPS */}
+              <div className="mb-4">
+                <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-2">Waters Near This Trip</p>
+                <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto pr-1">
+                  {/* We use the coordinates saved in the selectedSession object */}
+                  {getWaterWithinRadius(selectedSession.lat || 0, selectedSession.lon || 0, 5).length > 0 ? (
+                    getWaterWithinRadius(selectedSession.lat || 0, selectedSession.lon || 0, 5).map(waterName => (
+                      <button
+                        key={waterName}
+                        onClick={() => handleUpdateSessionLocation(selectedSession.id, waterName)}
+                        className="w-full text-left p-3 rounded-xl bg-slate-800 hover:bg-blue-600/20 border border-slate-700 hover:border-blue-500/50 transition-all text-[11px] font-black text-white uppercase italic"
                       >
-                        {water.name}
+                        {waterName}
                       </button>
-                    ))}
-                  </div>
+                    ))
+                  ) : (
+                    <p className="text-[10px] text-slate-600 italic px-2 font-bold">No nearby water data found for these coordinates.</p>
+                  )}
                 </div>
-              )}
+              </div>
 
               <div className="flex gap-2">
                 <input
                   autoFocus
+                  id="manualLocationInput"
                   type="text"
-                  placeholder="Enter location name..."
+                  placeholder="Or type custom name..."
                   defaultValue={selectedSession.location === "Detecting Location..." ? "" : selectedSession.location}
                   className="flex-1 bg-[#020617] border border-slate-800 rounded-xl p-4 text-sm text-white outline-none focus:border-blue-500/50"
-                  id="logLocationInput"
                 />
                 <button 
                   onClick={() => {
-                    const val = (document.getElementById('logLocationInput') as HTMLInputElement).value;
+                    const val = (document.getElementById('manualLocationInput') as HTMLInputElement).value;
                     handleUpdateSessionLocation(selectedSession.id, val);
                   }}
-                  className="bg-blue-600 px-6 rounded-xl font-black text-[10px] uppercase text-white shadow-lg active:scale-95 transition-all"
+                  className="bg-blue-600 px-6 rounded-xl font-black text-[10px] uppercase text-white shadow-lg active:scale-95"
                 >
                   Save
                 </button>
               </div>
             </div>
           ) : (
-            <div 
-              onClick={() => setIsEditingLogLocation(true)}
-              className="group cursor-pointer mb-4"
-            >
+            <div onClick={() => setIsEditingLogLocation(true)} className="group cursor-pointer mb-4">
               <h2 className="text-4xl font-black italic uppercase text-white leading-tight group-hover:text-blue-400 transition-colors flex items-center gap-3">
                 {selectedSession.location}
                 <span className="text-xs opacity-40">✏️</span>
