@@ -65,8 +65,9 @@ export default function FishDex() {
   const [newWeight, setNewWeight] = useState("")
   const [newLength, setNewLength] = useState("")
   const [displayTime, setDisplayTime] = useState("0m");
-
- // --- DATA AGGREGATION ---
+  const [fullscreenImage, setFullscreenImage] = useState<{url: string, catchId: string} | null>(null);
+ 
+  // --- DATA AGGREGATION ---
  const pendingSyncCount = useMemo(() => {
   // Ignore items that are in the delete queue!
   const unsyncedFish = history.filter(f => (f as any).synced === 0 && !deletedSessionIds.includes(f.sessionId)).length;
@@ -218,6 +219,26 @@ setSessionsMetadata([...localUnsyncedSessions, ...(sessionData.sessions || [])])
       updateLocationData();
     }
   }, [view]);
+  // --- LOCATION AUTO-CORRECT ---
+  useEffect(() => {
+    // If we are in a session and the location has finally loaded...
+    if (currentSessionId && sessionLocation !== "Detecting Location..." && sessionLocation !== "Current Expedition") {
+      setHistory(prev => {
+        let hasChanges = false;
+        const updated = prev.map(fish => {
+          // Find fish in this session that still have the placeholder location
+          if (fish.sessionId === currentSessionId && (fish.location === "Detecting Location..." || fish.location === "Current Expedition")) {
+            hasChanges = true;
+            // Update the local Dexie vault in the background
+            db.localSpecies.update(fish.id, { location: sessionLocation, synced: 0 }).catch(console.error);
+            return { ...fish, location: sessionLocation, synced: 0 };
+          }
+          return fish;
+        });
+        return hasChanges ? updated : prev;
+      });
+    }
+  }, [sessionLocation, currentSessionId]);
 // --- PERSISTENCE EFFECT ---
 useEffect(() => {
   const savedId = localStorage.getItem('active_session_id');
@@ -429,7 +450,7 @@ const handleAddCatch = async () => {
   }
 };
 
-  const handleImageUpload = (catchId: string, file: File) => {
+const handleImageUpload = (catchId: string, file: File) => {
     const fakeUrl = URL.createObjectURL(file);
     
     setHistory(prev => prev.map(c => {
@@ -446,6 +467,42 @@ const handleAddCatch = async () => {
         })
       });
     }
+  };
+
+  // --- DELETE IMAGE HANDLER ---setHistory
+  const handleDeleteImage = async () => {
+    if (!fullscreenImage) return;
+    const { url, catchId } = fullscreenImage;
+
+    if (!window.confirm("Are you sure you want to delete this photo?")) return;
+
+   // 1. Update local history and Dexie vault
+    setHistory(prev => prev.map(c => {
+      if (c.id === catchId) {
+        const newMedia = (c.media || []).filter(m => m !== url);
+        
+        // ⚡️ We add 'async' and 'await' here to handle the DB update
+        (async () => {
+          await db.localSpecies.update(catchId, { media: newMedia, synced: 0 } as any);
+        })().catch(console.error);
+
+        return { ...c, media: newMedia, synced: 0 };
+      }
+      return c;
+    }));
+    // 2. Update the live detail view
+    if (selectedSession) {
+      setSelectedSession({
+        ...selectedSession,
+        catches: selectedSession.catches.map(c => {
+          if (c.id === catchId) return { ...c, media: (c.media || []).filter(m => m !== url) };
+          return c;
+        })
+      });
+    }
+
+    // 3. Close the viewer
+    setFullscreenImage(null);
   };
 // --- NEW: DELETE HANDLERS ---
   const handleDeleteCatch = async (catchId: string) => {
@@ -888,7 +945,13 @@ const handleDeleteSession = async (sessionId: string) => {
                       <div className="flex gap-2 overflow-x-auto mb-3 pb-2">
                         {fish.media.map((url, i) => (
                            // eslint-disable-next-line @next/next/no-img-element
-                          <img key={i} src={url} alt="Catch" className="h-16 w-16 object-cover rounded-lg border border-slate-700" />
+                         <img 
+  key={i} 
+  src={url} 
+  alt="Catch" 
+  onClick={() => setFullscreenImage({ url, catchId: fish.id })}
+  className="h-16 w-16 object-cover rounded-lg border border-slate-700 cursor-pointer hover:opacity-80 transition-opacity" 
+/>
                         ))}
                       </div>
                     )}
@@ -972,7 +1035,19 @@ const handleDeleteSession = async (sessionId: string) => {
           <span className="font-black uppercase text-xs tracking-[0.2em]">Record Specimen</span>
         </button>
       )}
-
+{/* 6. FULLSCREEN IMAGE VIEWER */}
+      {fullscreenImage && (
+        <div className="fixed inset-0 z-[100] flex flex-col bg-black/95 backdrop-blur-xl animate-in fade-in duration-200">
+          <div className="flex justify-between items-center p-6 pt-12">
+            <button onClick={() => setFullscreenImage(null)} className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-white transition-colors">← Close</button>
+            <button onClick={handleDeleteImage} className="text-[10px] font-black uppercase tracking-widest text-red-500 hover:text-red-400 bg-red-500/10 px-3 py-2 rounded-lg border border-red-500/20 transition-colors">Delete Photo</button>
+          </div>
+          <div className="flex-1 flex items-center justify-center p-4 pb-12">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={fullscreenImage.url} alt="Fullscreen Catch" className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
