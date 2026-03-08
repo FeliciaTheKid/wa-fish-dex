@@ -16,6 +16,7 @@ interface Catch {
   name: string;
   weight: number;
   length: number;
+  lure?: string;
   date: string;
   location: string;
   sessionId: string;
@@ -67,7 +68,8 @@ export default function FishDex() {
   const [newLength, setNewLength] = useState("")
   const [displayTime, setDisplayTime] = useState("0m");
   const [fullscreenImage, setFullscreenImage] = useState<{url: string, catchId: string} | null>(null);
- 
+  const [newLure, setNewLure] = useState("");
+  const [pbCelebration, setPbCelebration] = useState<{name: string, weight: number} | null>(null);
   // --- DATA AGGREGATION ---
  const pendingSyncCount = useMemo(() => {
   // Ignore items that are in the delete queue!
@@ -402,6 +404,11 @@ const handleFinalizeSession = async () => {
   }
 };
 const handleUpdateSessionLocation = async (sessionId: string, newLocation: string) => {
+    if (!newLocation || newLocation.trim() === "") {
+      setIsEditingLogLocation(false);
+      return;
+    }
+    
     try {
       // 1. Update the local metadata state
       setSessionsMetadata(prev => prev.map(s => 
@@ -415,20 +422,19 @@ const handleUpdateSessionLocation = async (sessionId: string, newLocation: strin
 
       // 3. Update the database (Dexie)
       await db.localSessions.update(sessionId, { location: newLocation, synced: 0 });
-      const fishIds = history.filter(f => f.sessionId === sessionId).map(f => f.id);
-      for (const id of fishIds) {
-        await db.localSpecies.update(id, { location: newLocation, synced: 0 } as any);
+      const fishEntries = await db.localSpecies.where('sessionId').equals(sessionId).toArray();
+      for (const fish of fishEntries) {
+        await db.localSpecies.update(fish.id, { location: newLocation, synced: 0 } as any);
       }
 
-      // 4. Close the editor
-      setIsEditingLogLocation(false);
-      
-      // 5. Update the currently viewed session object
+      // 4. Update the currently viewed session object so the UI updates immediately
       if (selectedSession) {
         setSelectedSession({ ...selectedSession, location: newLocation });
       }
 
-      // 6. Trigger a background sync
+      setIsEditingLogLocation(false);
+
+      // 5. Trigger a background sync to the cloud
       fetch('/api/species/sessions/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -442,60 +448,72 @@ const handleUpdateSessionLocation = async (sessionId: string, newLocation: strin
 const handleAddCatch = async () => {
   if (!newName || !currentSessionId) return;
 
-  // 1. Create the Catch object
-  // We add 'synced: 0' so we can track what hasn't hit Supabase yet
+  const weightNum = Number(newWeight) || 0;
+
+  // 🏆 PB CHECK: Compare this fish to your existing Life List
+  const existingRecord = lifeList.find(s => s.name === newName);
+  const isPB = weightNum > (existingRecord?.maxWeight || 0);
+
   const newCatch = {
     id: crypto.randomUUID(),
     name: newName,
-    quantity: 1,
-    weight: Number(newWeight) || 0,
+    quantity: 1, // Keep this for DB consistency
+    weight: weightNum,
     length: Number(newLength) || 0,
+    lure: newLure, // 🎣 Save the lure!
     date: new Date().toISOString(),
     location: sessionLocation,
     sessionId: currentSessionId,
     media: [],
-    synced: 0 // 🎣 New: 0 = local only, 1 = saved to cloud
+    synced: 0 
   };
 
   try {
-    // 2. SAVE TO LOCAL VAULT FIRST (The "Battery")
-    // This is instant and works without a cell signal
+    // 1. SAVE TO LOCAL VAULT FIRST (Instant)
     await db.localSpecies.add(newCatch);
 
-    // 3. Update UI immediately
+    // 2. Update UI immediately (Optimistic)
     setHistory(prev => [newCatch, ...prev]);
 
-    // 4. Reset the UI/Drawer
+    // 3. 🎉 CELEBRATION TRIGGER
+    if (isPB) {
+      setPbCelebration({ name: newName, weight: weightNum });
+      if (navigator.vibrate) navigator.vibrate([100, 50, 100]); 
+      setTimeout(() => setPbCelebration(null), 5000); 
+    }
+
+    // 4. Reset Drawer & UI States
     setShowAddDrawer(false);
     setNewName("");
     setNewWeight("");
     setNewLength("");
+    setNewLure(""); 
     setSearchTerm("");
 
-   // 5. TRY TO SYNC IN THE BACKGROUND
+    // 5. TRY TO SYNC IN THE BACKGROUND
     fetch('/api/species/add', { 
       method: 'POST', 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newCatch) 
     }).then(async (res) => {
       if (res.ok) {
-        // 1. Update the Local Vault
+        // ✅ Mark as synced in local DB
         await db.localSpecies.update(newCatch.id, { synced: 1 });
         
-        // 2. Update the Local State immediately so the counter drops
+        // ✅ Update the local State immediately (The "Sync Meter" fix)
         setHistory(prev => prev.map(f => 
           f.id === newCatch.id ? { ...f, synced: 1 } : f
         ));
         
-        // 3. Refresh everything else
+        // Refresh everything else in the background
         await fetchData(); 
         console.log("✅ Sync successful, Status Bar updated.");
       }
-    })
+    });
 
   } catch (err) {
     console.error("Local Save Failed:", err);
-    alert("Database Error: Is your phone storage full?");
+    alert("Database Error: Check phone storage.");
   }
 };
 
@@ -950,24 +968,51 @@ const handleDeleteSession = async (sessionId: string) => {
       {view === 'session-detail' && selectedSession && (
         <main className="max-w-md mx-auto px-6 pt-8 pb-32">
           <button onClick={() => setView('sessions')} className="mb-8 text-slate-500 font-black uppercase text-[10px] tracking-widest">← Back to Logs</button>
-          
-          {/* Changed mb-8 to mb-4 below */}
-          {/* EDITABLE LOCATION HEADER */}
+          {/* 📱 MOBILE-FRIENDLY EDITABLE LOCATION HEADER */}
           {isEditingLogLocation ? (
-            <div className="mb-6 animate-in fade-in zoom-in duration-200">
-              <input
-                autoFocus
-                type="text"
-                defaultValue={selectedSession.location}
-                className="w-full bg-slate-900 border-2 border-blue-500 rounded-2xl p-4 text-2xl font-black italic text-white outline-none mb-2"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleUpdateSessionLocation(selectedSession.id, e.currentTarget.value);
-                  }
-                  if (e.key === 'Escape') setIsEditingLogLocation(false);
-                }}
-              />
-              <p className="text-[10px] font-black uppercase text-slate-500 ml-2">Press Enter to Save • Esc to Cancel</p>
+            <div className="mb-8 bg-slate-900/80 p-5 rounded-[2rem] border border-blue-500 shadow-2xl animate-in fade-in zoom-in duration-200">
+              <div className="flex justify-between items-center mb-3">
+                <p className="text-[9px] font-black text-blue-500 uppercase tracking-widest">Update Location</p>
+                <button onClick={() => setIsEditingLogLocation(false)} className="text-[10px] text-slate-500 uppercase font-black">Cancel</button>
+              </div>
+
+              {/* Suggestions from the GPS/Weather Data */}
+              {nearbyWaters.length > 0 && (
+                <div className="mb-4 space-y-2">
+                  <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1">Suggestions Near Here</p>
+                  <div className="flex flex-wrap gap-2">
+                    {nearbyWaters.slice(0, 3).map(water => (
+                      <button 
+                        key={water.name}
+                        onClick={() => handleUpdateSessionLocation(selectedSession.id, water.name)}
+                        className="bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-xl text-[10px] font-black text-white border border-slate-700 transition-colors"
+                      >
+                        {water.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="Enter location name..."
+                  defaultValue={selectedSession.location === "Detecting Location..." ? "" : selectedSession.location}
+                  className="flex-1 bg-[#020617] border border-slate-800 rounded-xl p-4 text-sm text-white outline-none focus:border-blue-500/50"
+                  id="logLocationInput"
+                />
+                <button 
+                  onClick={() => {
+                    const val = (document.getElementById('logLocationInput') as HTMLInputElement).value;
+                    handleUpdateSessionLocation(selectedSession.id, val);
+                  }}
+                  className="bg-blue-600 px-6 rounded-xl font-black text-[10px] uppercase text-white shadow-lg active:scale-95 transition-all"
+                >
+                  Save
+                </button>
+              </div>
             </div>
           ) : (
             <div 
@@ -976,8 +1021,9 @@ const handleDeleteSession = async (sessionId: string) => {
             >
               <h2 className="text-4xl font-black italic uppercase text-white leading-tight group-hover:text-blue-400 transition-colors flex items-center gap-3">
                 {selectedSession.location}
-                <span className="text-xs opacity-0 group-hover:opacity-100 transition-opacity">✏️</span>
+                <span className="text-xs opacity-40">✏️</span>
               </h2>
+              <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-1">Tap title to rename spot</p>
             </div>
           )}
           {/* NEW: SAVED WEATHER STRIP */}
@@ -998,19 +1044,22 @@ const handleDeleteSession = async (sessionId: string) => {
 
           <p className="text-[9px] font-black text-slate-500 uppercase mb-4 tracking-widest">Logged Catches</p>
           <div className="space-y-2 mb-12">
-            {selectedSession.catches.map(fish => (
-              <div key={fish.id} className="bg-slate-900/50 rounded-2xl border border-slate-800 overflow-hidden">
-                <button 
-                  onClick={() => setExpandedLogCatch(expandedLogCatch === fish.id ? null : fish.id)} 
-                  className="w-full p-4 flex justify-between items-center text-left"
-                >
-                  <span className="font-black text-[11px] uppercase tracking-tighter text-white">{fish.name}</span>
-                  <div className="flex items-center gap-3">
-                    {fish.media && fish.media.length > 0 && <span className="text-[10px]">📷</span>}
-                    <span className="text-[10px] text-slate-400 font-bold">{fish.weight}lb • {fish.length}in</span>
-                  </div>
-                </button>
-
+           {selectedSession.catches.map(fish => (
+  <div key={fish.id} className="bg-slate-900/50 rounded-2xl border border-slate-800 overflow-hidden">
+    <button 
+      onClick={() => setExpandedLogCatch(expandedLogCatch === fish.id ? null : fish.id)} 
+      className="w-full p-4 flex justify-between items-center text-left"
+    >
+      <span className="font-black text-[11px] uppercase tracking-tighter text-white">{fish.name}</span>
+      <div className="flex items-center gap-3">
+        {fish.media && fish.media.length > 0 && <span className="text-[10px]">📷</span>}
+        
+        {/* THIS IS YOUR NEW LINE */}
+        <span className="text-[10px] text-slate-400 font-bold">{fish.weight}lb • {fish.length}in {fish.lure && `• 🎣 ${fish.lure}`}</span>
+        
+      </div>
+    </button>
+    {/* ... expanded media area ... */}
                 {/* Expanded area: Image upload & Delete Catch */}
                 {expandedLogCatch === fish.id && (
                   <div className="p-4 pt-0 border-t border-slate-800/50 mt-2">
@@ -1095,6 +1144,14 @@ const handleDeleteSession = async (sessionId: string) => {
               <input type="number" value={newWeight} onChange={(e) => setNewWeight(e.target.value)} placeholder="Weight (lbs)" className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white outline-none" />
               <input type="number" value={newLength} onChange={(e) => setNewLength(e.target.value)} placeholder="Length (in)" className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white outline-none" />
             </div>
+            {/* 🎣 NEW LURE INPUT */}
+<input 
+  type="text" 
+  value={newLure} 
+  onChange={(e) => setNewLure(e.target.value)} 
+  placeholder="Lure / Bait (e.g. Ned Rig)" 
+  className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-4 text-white outline-none mb-8" 
+/>
             <button onClick={handleAddCatch} disabled={!newName || loading} className="w-full bg-blue-600 py-6 rounded-3xl font-black uppercase text-sm">{loading ? 'Archiving...' : 'Log Catch'}</button>
           </div>
         </div>
@@ -1120,6 +1177,18 @@ const handleDeleteSession = async (sessionId: string) => {
           <div className="flex-1 flex items-center justify-center p-4 pb-12">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={fullscreenImage.url} alt="Fullscreen Catch" className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" />
+          </div>
+        </div>
+      )}
+      {/* 🏆 PB CELEBRATION BANNER */}
+      {pbCelebration && (
+        <div className="fixed top-10 left-6 right-6 z-[100] bg-gradient-to-r from-amber-500 to-yellow-600 p-1 rounded-3xl shadow-[0_0_30px_rgba(245,158,11,0.5)] animate-in slide-in-from-top-full duration-500">
+          <div className="bg-[#020617] rounded-[1.4rem] p-6 text-center">
+            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-500 mb-1">New Personal Best</p>
+            <h3 className="text-2xl font-black italic uppercase text-white tracking-tighter">
+              {pbCelebration.weight}lb {pbCelebration.name}
+            </h3>
+            <p className="text-[10px] text-slate-400 mt-2 font-bold uppercase tracking-widest">The archive has been updated.</p>
           </div>
         </div>
       )}
