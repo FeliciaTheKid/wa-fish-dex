@@ -323,6 +323,28 @@ useEffect(() => {
       const unsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
       for (const sess of unsyncedSessions) {
         console.log("⚡️ Syncing Session:", sess.location);
+        // Inside your syncOfflineData function, before saving the session to Supabase:
+if (sess.temp === '--' && sess.lat && sess.lon) {
+  console.log("🌦️ Missing weather found! Retro-fetching for:", sess.location);
+  const apiKey = process.env.NEXT_PUBLIC_OPENWEATHER_KEY;
+  const unixTime = Math.floor(new Date(sess.startTime).getTime() / 1000);
+  const historyRes = await fetch(
+    `https://api.openweathermap.org/data/3.0/onecall/timemachine?lat=${sess.lat}&lon=${sess.lon}&dt=${unixTime}&appid=${apiKey}&units=imperial`
+  );
+  
+  const historyData = await historyRes.json();
+  if (historyData.data?.[0]) {
+    const w = historyData.data[0];
+    sess.temp = `${Math.round(w.temp)}°F`;
+    sess.wind = `${Math.round(w.wind_speed)}mph`;
+    sess.cond = w.weather[0].main;
+    
+    // Update local DB so we don't fetch it again
+    await db.localSessions.update(sess.id, { 
+      temp: sess.temp, wind: sess.wind, cond: sess.cond 
+    });
+  }
+}
         const res = await fetch('/api/species/sessions/save', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
