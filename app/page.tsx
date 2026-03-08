@@ -54,7 +54,10 @@ export default function FishDex() {
   const [expandedActiveGroup, setExpandedActiveGroup] = useState<string | null>(null)
   const [startTime, setStartTime] = useState<number | null>(null)
   const [sessionNotes, setSessionNotes] = useState<string>("");
- 
+  const [deletedSessionIds, setDeletedSessionIds] = useState<string[]>([]);
+  useEffect(() => {
+    setDeletedSessionIds(JSON.parse(localStorage.getItem('deleted_sessions') || '[]'));
+  }, []);
   // --- ADD CATCH STATE ---
   const [showAddDrawer, setShowAddDrawer] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
@@ -95,11 +98,11 @@ const sessionLogs = useMemo(() => {
     const sessions: Record<string, Expedition> = {};
 
     history.forEach(f => {
-      if (!f.sessionId) return;
+      // Hide the ghosts! If it has no ID, or if the ID is in our delete queue, skip it.
+      if (!f.sessionId || deletedSessionIds.includes(f.sessionId)) return; 
       
       // Look for real metadata (weather/notes) for this session
       const meta = sessionsMetadata.find(m => m.id === f.sessionId);
-
       if (!sessions[f.sessionId]) {
         sessions[f.sessionId] = { 
           id: f.sessionId, 
@@ -149,14 +152,18 @@ const groupedSessionCatches = useMemo(() => {
     navigator.geolocation.getCurrentPosition(async (pos) => {
       const { latitude: lat, longitude: lon } = pos.coords;
       
-      // 1. Existing Water Detection
-      const nearby = getWaterWithinRadius(lat, lon, 15).map((name: string) => ({
+      // 1. Existing Water Detection (Changed to 5 mile radius)
+      const nearby = getWaterWithinRadius(lat, lon, 5).map((name: string) => ({
         name,
         dist: calculateDistance(lat, lon, name) 
       })).sort((a, b) => a.dist - b.dist);
+      
       setNearbyWaters(nearby);
-      if (sessionLocation === "Detecting Location...") setSessionLocation(nearby[0]?.name || "Current Expedition");
-
+      
+      // Default to the closest water, or fallback if nothing is within 5 miles
+      if (sessionLocation === "Detecting Location..." || sessionLocation === "Current Expedition") {
+        setSessionLocation(nearby[0]?.name || "Unknown Water");
+      }
       // 2. NEW: Real-Time Weather Fetch
       try {
         const apiKey = process.env.NEXT_PUBLIC_OPENWEATHER_KEY;
@@ -233,6 +240,26 @@ useEffect(() => {
     if (!navigator.onLine) return;
 
     try {
+      // 👻 STEP 0: Bust the Ghosts (Process the Delete Queue)
+      const deletedQueue = JSON.parse(localStorage.getItem('deleted_sessions') || '[]');
+      if (deletedQueue.length > 0) {
+        console.log("👻 Clearing deleted expeditions from the cloud...");
+        
+        const remainingGhosts = [];
+        for (const id of deletedQueue) {
+          const res = await fetch(`/api/species/delete-session?id=${id}`, { method: 'DELETE' });
+          if (!res.ok) {
+            remainingGhosts.push(id); // If it fails, keep it in the queue to try again later
+          } else {
+            console.log("✅ Ghost busted:", id);
+          }
+        }
+        
+        // Update the queue to only contain failed deletions (if any)
+        localStorage.setItem('deleted_sessions', JSON.stringify(remainingGhosts));
+        setDeletedSessionIds(remainingGhosts);
+      }
+
       // ⚡️ STEP 1: Sync Sessions FIRST (The Parent Record)
       const unsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
       for (const sess of unsyncedSessions) {
@@ -270,7 +297,7 @@ useEffect(() => {
       }
       
       // STEP 3: Refresh the UI once the "relays" are flipped
-      if (unsyncedFish.length > 0 || unsyncedSessions.length > 0) {
+      if (unsyncedFish.length > 0 || unsyncedSessions.length > 0 || deletedQueue.length > 0) {
         await fetchData(); 
       }
     } catch (err) {
@@ -281,7 +308,7 @@ useEffect(() => {
   syncOfflineData();
   window.addEventListener('online', syncOfflineData);
   return () => window.removeEventListener('online', syncOfflineData);
-}, []);
+}, []); // Note: leaving dependency array empty so it registers the listeners once
 // --- HANDLERS ---
   const handleStartSession = () => {
     const newId = crypto.randomUUID();
@@ -448,31 +475,34 @@ const handleDeleteSession = async (sessionId: string) => {
     if (!window.confirm("Are you sure you want to delete this entire expedition?")) return;
 
     try {
-      // ⚡️ 1. PURGE THE LOCAL VAULT (Dexie)
-      // This removes it from your phone's memory immediately
+      // 1. Purge the local vault
       await db.localSessions.delete(sessionId);
       await db.localSpecies.where('sessionId').equals(sessionId).delete();
 
-      // ⚡️ 2. REFRESH UI IMMEDIATELY (This makes it work offline!)
+      // 2. Queue for cloud deletion (Ghost Buster)
+      const newDeleted = [...deletedSessionIds, sessionId];
+      setDeletedSessionIds(newDeleted);
+      localStorage.setItem('deleted_sessions', JSON.stringify(newDeleted));
+
+      // 3. Update UI immediately
       setHistory(prev => prev.filter(c => c.sessionId !== sessionId));
       setSessionsMetadata(prev => prev.filter(s => s.id !== sessionId));
       setSelectedSession(null);
       setView('sessions');
 
-      // ⚡️ 3. PULSE THE CLOUD (Supabase)
-      // Wrapped in an if-statement so it doesn't throw angry network errors while offline
+      // 4. Try to delete from cloud immediately if online
       if (navigator.onLine) {
         const res = await fetch(`/api/species/delete-session?id=${sessionId}`, { method: 'DELETE' });
-        if (res.ok) console.log("✅ Expedition purged from Cloud.");
-      } else {
-        console.log("📴 Offline: Expedition deleted locally.");
+        if (res.ok) {
+          const updatedDeleted = newDeleted.filter(id => id !== sessionId);
+          setDeletedSessionIds(updatedDeleted);
+          localStorage.setItem('deleted_sessions', JSON.stringify(updatedDeleted));
+        }
       }
-      
     } catch (e) {
       console.error("Delete failed:", e);
     }
   };
-
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 font-sans selection:bg-blue-500/30">
       
@@ -527,10 +557,11 @@ const handleDeleteSession = async (sessionId: string) => {
       </div>
     </main>
   )}
-
-      {/* 2. ACTIVE SESSION */}
+{/* 2. ACTIVE SESSION */}
       {view === 'active-session' && (
         <main className="max-w-md mx-auto px-6 pt-8 pb-40 animate-in fade-in duration-300">
+          
+          {/* TOP HEADER (Only one this time!) */}
           <div className="flex justify-between items-center mb-6">
             <button onClick={() => setView('home')} className="bg-slate-900 w-12 h-12 rounded-full border border-slate-800 flex items-center justify-center font-black">←</button>
             <div className="text-right">
@@ -539,10 +570,53 @@ const handleDeleteSession = async (sessionId: string) => {
             </div>
           </div>
 
-          <div onClick={() => setIsEditingLocation(true)} className="bg-slate-900 p-6 rounded-[2rem] border border-slate-800 mb-4 cursor-pointer hover:border-blue-500/50 transition-colors shadow-xl">
-              <p className="text-[9px] font-black text-slate-500 uppercase mb-1 tracking-widest">📍 Location</p>
-              <p className="text-xl font-black italic text-white uppercase truncate">{sessionLocation}</p>
-          </div>
+          {/* THIS IS YOUR NEW LOCATION DROPDOWN */}
+          {isEditingLocation ? (
+            <div className="bg-slate-900 p-5 rounded-[2rem] border border-blue-500 mb-4 shadow-xl">
+              <div className="flex justify-between items-center mb-3">
+                <p className="text-[9px] font-black text-blue-500 uppercase tracking-widest">Select Location</p>
+                <button onClick={() => setIsEditingLocation(false)} className="text-[10px] text-slate-500 uppercase font-black hover:text-white transition-colors">Cancel</button>
+              </div>
+              <div className="max-h-48 overflow-y-auto space-y-2 mb-3 pr-1">
+                {nearbyWaters.length > 0 ? (
+                  nearbyWaters.map(water => (
+                    <button
+                      key={water.name}
+                      onClick={() => {
+                        setSessionLocation(water.name);
+                        setIsEditingLocation(false);
+                      }}
+                      className="w-full text-left p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm font-black text-white flex justify-between items-center transition-colors"
+                    >
+                      <span className="truncate pr-4">{water.name}</span>
+                      <span className="text-slate-400 text-[10px] font-black">{water.dist.toFixed(1)}mi</span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="text-[10px] text-slate-500 text-center py-4 font-black uppercase tracking-widest">No named waters within 5 miles.</p>
+                )}
+              </div>
+              <input
+                type="text"
+                placeholder="Or type a custom spot..."
+                className="w-full bg-[#020617] border border-slate-800 rounded-xl p-4 text-sm text-white outline-none focus:border-blue-500/50"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && e.currentTarget.value) {
+                    setSessionLocation(e.currentTarget.value);
+                    setIsEditingLocation(false);
+                  }
+                }}
+              />
+            </div>
+          ) : (
+            <div onClick={() => setIsEditingLocation(true)} className="bg-slate-900 p-6 rounded-[2rem] border border-slate-800 mb-4 cursor-pointer hover:border-blue-500/50 transition-colors shadow-xl group">
+                <p className="text-[9px] font-black text-slate-500 uppercase mb-1 tracking-widest flex justify-between">
+                  📍 Location
+                  <span className="text-blue-500/50 group-hover:text-blue-500 transition-colors">Tap to change</span>
+                </p>
+                <p className="text-xl font-black italic text-white uppercase truncate">{sessionLocation}</p>
+            </div>
+          )}
 
           <div className="grid grid-cols-3 gap-2 mb-8 text-center">
             <div className="bg-slate-900/40 py-4 rounded-2xl border border-slate-800/50">
@@ -609,7 +683,7 @@ const handleDeleteSession = async (sessionId: string) => {
           <button onClick={() => setView('summary')} className="mt-8 w-full py-5 text-[10px] font-black uppercase text-blue-400 border border-blue-500/20 rounded-2xl bg-blue-500/5 hover:bg-blue-500/10 transition-colors">End Expedition</button>
         </main>
       )}
-{/* EXPEDITION SUMMARY (REVIEW AFTER) */}
+     {/* EXPEDITION SUMMARY (REVIEW AFTER) */}
       {view === 'summary' && (
         <main className="max-w-md mx-auto px-6 pt-12 pb-32 animate-in fade-in zoom-in duration-300">
           <h2 className="text-5xl font-black italic uppercase text-white mb-2 tracking-tighter">Expedition<br/>Review</h2>
