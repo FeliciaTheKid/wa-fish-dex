@@ -195,13 +195,23 @@ const fetchData = async () => {
     const catchData = await catchRes.json();
     const sessionData = await sessionRes.json();
 
-    // 2. Get the "Unsynced" data from your phone (Both fish and sessions)
-const localUnsyncedFish = await db.localSpecies.where('synced').equals(0).toArray();
-const localUnsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
+    // 2. Get the "Unsynced" data from your phone
+    const localUnsyncedFish = await db.localSpecies.where('synced').equals(0).toArray();
+    const localUnsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
 
-// 3. Merge them
-setHistory([...localUnsyncedFish, ...(catchData.species || [])]);
-setSessionsMetadata([...localUnsyncedSessions, ...(sessionData.sessions || [])]);
+    // 3. 🛡️ Merge & Deduplicate (The "Bouncer" Logic)
+    setHistory(() => {
+      const allFish = [...localUnsyncedFish, ...(catchData.species || [])];
+      // This creates a map of id -> fish, automatically overwriting duplicates
+      return Array.from(new Map(allFish.map(f => [f.id, f])).values());
+    });
+
+    setSessionsMetadata(() => {
+      const allSessions = [...localUnsyncedSessions, ...(sessionData.sessions || [])];
+      // This creates a map of id -> session, automatically overwriting duplicates
+      return Array.from(new Map(allSessions.map(s => [s.id, s])).values());
+    });
+
   } catch (e) { 
     // 🌲 IF OFFLINE: Just show the local vault!
     const allLocal = await db.localSpecies.toArray();
@@ -469,7 +479,7 @@ const handleImageUpload = (catchId: string, file: File) => {
     }
   };
 
-  // --- DELETE IMAGE HANDLER ---setHistory
+  // --- DELETE IMAGE HANDLER ---
   const handleDeleteImage = async () => {
     if (!fullscreenImage) return;
     const { url, catchId } = fullscreenImage;
