@@ -7,6 +7,9 @@ export interface LakeLocation {
   lon: number;
   county?: string;
   water_type?: string;
+  species_present?: string[]; // Added for Tactical Intel sync
+  has_boat_launch?: boolean;  // Added for Tactical Intel sync
+  wdfw_url?: string;
 }
 
 export interface LocalSpecies {
@@ -19,13 +22,18 @@ export interface LocalSpecies {
   location: string;
   sessionId: string;
   synced: number;
+  // ✅ Added for Shellfish support
+  keeperCount?: number;
+  soakTime?: number;
+  media?: string[];
 }
 
 export interface LocalSession {
   id: string;
+  type: 'freshwater' | 'saltwater' | 'shellfish'; // ✅ Added trip type
   location: string;
   startTime: string;
-  duration?: string; // ✅ MATCHES YOUR UI TYPE
+  duration?: string;
   notes: string;
   temp: string;
   wind: string;
@@ -33,6 +41,7 @@ export interface LocalSession {
   lat: number | null;
   lon: number | null;
   synced: number;
+  tides?: { high: string, low: string };
 }
 
 export class OfflineVault extends Dexie {
@@ -43,12 +52,11 @@ export class OfflineVault extends Dexie {
   constructor() {
     super('OfflineVault');
     
-    // ⚡ BUMPED TO VERSION 3
-    // We added 'startTime' to the index so your Log Book sorts instantly
-    this.version(3).stores({
-      localSpecies: 'id, sessionId, synced, name',
-      localSessions: 'id, synced, startTime', 
-      fishingLocations: 'id, name' 
+    // ⚡ Version 4: Optimized for Tactical filtering
+    this.version(4).stores({
+      localSpecies: 'id, sessionId, synced, name, location',
+      localSessions: 'id, synced, startTime, type', 
+      fishingLocations: 'id, name, [lat+lon]' // Compound index for proximity searches
     });
   }
 }

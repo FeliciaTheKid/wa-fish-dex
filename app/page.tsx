@@ -118,7 +118,7 @@ export default function FishDex() {
   const [history, setHistory] = useState<Catch[]>([]);
   const [sessionsMetadata, setSessionsMetadata] = useState<any[]>([]);
   const [deletedSessionIds, setDeletedSessionIds] = useState<string[]>([]);
-
+  const [currentLakeData, setCurrentLakeData] = useState<any>(null);
   const [sessionLocation, setSessionLocation] = useState<string>("Detecting Location...");
   const [isEditingLocation, setIsEditingLocation] = useState(false);
   const [nearbyWaters, setNearbyWaters] = useState<{name: string, dist: number, data: any}[]>([]);
@@ -256,6 +256,7 @@ export default function FishDex() {
   const fetchData = async () => {
     setLoading(true);
     try {
+      // 1. Concurrent Fetch from Cloud
       const [catchRes, sessionRes] = await Promise.all([
         fetch('/api/species/list', { cache: 'no-store' }),
         fetch('/api/species/sessions/list', { cache: 'no-store' }) 
@@ -264,33 +265,35 @@ export default function FishDex() {
       const catchData = await catchRes.json();
       const sessionData = await sessionRes.json();
 
-      const localUnsyncedFish = await db.localSpecies.where('synced').equals(0).toArray();
-      const localUnsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
+      // 2. Pull ALL local data (Synced + Unsynced)
+      const localFish = await db.localSpecies.toArray();
+      const localSessions = await db.localSessions.toArray();
 
-      // --- 🌊 NEW: OFFLINE LAKE CACHE SYNC ---
-      // Check if we already have the lakes stored locally
+      // 3. Sync Offline Lake Cache
       const localLakeCount = await db.fishingLocations.count();
-      
       if (localLakeCount === 0 && navigator.onLine) {
-        console.log("⚡ Initializing offline lake database...");
-        const { data: lakes, error } = await supabase
-          .from('fishing_locations')
-          .select('*');
-        
-        if (!error && lakes) {
-          await db.fishingLocations.bulkAdd(lakes);
-          console.log(`✅ Cached ${lakes.length} Washington waterbodies.`);
-        }
+        const { data: lakes, error } = await supabase.from('fishing_locations').select('*');
+        if (!error && lakes) await db.fishingLocations.bulkAdd(lakes);
       }
 
-      setHistory(() => {
-        const allFish = [...localUnsyncedFish, ...(catchData.species || [])];
-        return Array.from(new Map(allFish.map(f => [f.id, f])).values());
+      // 4. Deduplicate Sessions (The "Ghost Log" Killer)
+      setSessionsMetadata(() => {
+        const sessionMap = new Map();
+        localSessions.forEach(s => sessionMap.set(s.id, s));
+        if (sessionData.sessions) {
+          sessionData.sessions.forEach((s: any) => sessionMap.set(s.id, s));
+        }
+        return Array.from(sessionMap.values());
       });
 
-      setSessionsMetadata(() => {
-        const allSessions = [...localUnsyncedSessions, ...(sessionData.sessions || [])];
-        return Array.from(new Map(allSessions.map(s => [s.id, s])).values());
+      // 5. Deduplicate Fish
+      setHistory(() => {
+        const fishMap = new Map();
+        localFish.forEach(f => fishMap.set(f.id, f));
+        if (catchData.species) {
+          catchData.species.forEach((f: any) => fishMap.set(f.id, f));
+        }
+        return Array.from(fishMap.values());
       });
 
     } catch (e) { 
@@ -302,73 +305,63 @@ export default function FishDex() {
     } finally {
       setLoading(false);
     }
-  }
+  };
 
   const updateLocationData = async () => {
-  if (typeof window === "undefined" || !navigator.geolocation) return;
+    if (typeof window === "undefined" || !navigator.geolocation) return;
 
-  navigator.geolocation.getCurrentPosition(async (pos) => {
-    const { latitude: lat, longitude: lon } = pos.coords;
-    setSessionLat(lat);
-    setSessionLon(lon);
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const { latitude: lat, longitude: lon } = pos.coords;
+      setSessionLat(lat);
+      setSessionLon(lon);
 
-    // 1. PULL ALL LAKES FROM LOCAL CACHE
-    const allLakes = await db.fishingLocations.toArray();
+      const allLakes = await db.fishingLocations.toArray();
+      const nearby = allLakes
+        .map((water: any) => ({ 
+          name: water.name, 
+          dist: calculateDistance(lat, lon, water.lat, water.lon),
+          data: water 
+        }))
+        .filter((w: any) => w.dist < 5) 
+        .sort((a: any, b: any) => a.dist - b.dist);
+      
+      setNearbyWaters(nearby);
+      
+      const currentLoc = sessionLocation;
+      const needsUpdate = currentLoc === "Detecting Location..." || currentLoc === "Unknown Coordinates" || currentLoc.includes("Coord:");
 
-    // 2. CALCULATE DISTANCES LOCALLY (5-mile tactical radius)
-    const nearby = allLakes
-      .map((water: any) => ({ 
-        name: water.name, 
-        dist: calculateDistance(lat, lon, water.lat, water.lon),
-        data: water // ⚡ Carry full record for Auto-Lock
-      }))
-      .filter((w: any) => w.dist < 5) 
-      .sort((a: any, b: any) => a.dist - b.dist);
-    
-    setNearbyWaters(nearby);
-    
-    // 3. AUTO-LOCK & INTELLIGENCE DATA
-    const currentLoc = sessionLocation;
-    const needsUpdate = 
-      currentLoc === "Detecting Location..." || 
-      currentLoc === "Unknown Coordinates" || 
-      currentLoc.includes("Coord:");
-
-    if (needsUpdate && nearby.length > 0) {
-      // 🎯 Locks the UI to the closest body of water
-      setSessionLocation(nearby[0].name);
-      // 🧠 Feeds the species list and intel to the dashboard
-      setCurrentLakeData(nearby[0].data); 
-    } else if (needsUpdate) {
-      setSessionLocation(`Station: ${lat.toFixed(3)}, ${lon.toFixed(3)}`);
-    }
-
-    // 4. ENVIRONMENTAL DATA (Tides & Weather)
-    if (expeditionType === 'saltwater' || expeditionType === 'shellfish') {
-      setTides(mockTidalCalc(lat, lon));
-    }
-    
-    try {
-      const apiKey = process.env.NEXT_PUBLIC_OPENWEATHER_KEY;
-      if (apiKey && navigator.onLine) {
-        const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${apiKey}&units=imperial`);
-        const data = await res.json();
-        if (data.main) {
-          setWeather({
-            temp: `${Math.round(data.main.temp)}°F`,
-            wind: `${Math.round(data.wind.speed)}mph ${getWindDirection(data.wind.deg)}`,
-            cond: data.weather[0].main
-          });
-        }
+      if (needsUpdate && nearby.length > 0) {
+        setSessionLocation(nearby[0].name);
+        setCurrentLakeData(nearby[0].data); 
+      } else if (needsUpdate) {
+        setSessionLocation(`Station: ${lat.toFixed(3)}, ${lon.toFixed(3)}`);
       }
-    } catch (e) { 
-      setWeather({ temp: 'Offline', wind: 'Offline', cond: 'Unknown' });
-    }
-  }, (error) => {
-    console.error("GPS Error:", error);
-    setSessionLocation("GPS Signal Blocked");
-  }, { enableHighAccuracy: true });
-};
+
+      if (expeditionType === 'saltwater' || expeditionType === 'shellfish') {
+        setTides(mockTidalCalc(lat, lon));
+      }
+      
+      try {
+        const apiKey = process.env.NEXT_PUBLIC_OPENWEATHER_KEY;
+        if (apiKey && navigator.onLine) {
+          const res = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${apiKey}&units=imperial`);
+          const data = await res.json();
+          if (data.main) {
+            setWeather({
+              temp: `${Math.round(data.main.temp)}°F`,
+              wind: `${Math.round(data.wind.speed)}mph ${getWindDirection(data.wind.deg)}`,
+              cond: data.weather[0].main
+            });
+          }
+        }
+      } catch (e) { 
+        setWeather({ temp: 'Offline', wind: 'Offline', cond: 'Unknown' });
+      }
+    }, (error) => {
+      console.error("GPS Error:", error);
+      setSessionLocation("GPS Signal Blocked");
+    }, { enableHighAccuracy: true });
+  };
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (view === 'active-session') updateLocationData(); }, [view, expeditionType]);
@@ -392,37 +385,21 @@ export default function FishDex() {
     }
   }, []);
 
-  // 1. FIRST: Add this state near your other useState hooks (around Line 110)
-const [currentLakeData, setCurrentLakeData] = useState<any>(null);
+  const intelligenceData = useMemo(() => {
+    if (!sessionLocation || !currentLakeData) return null;
+    const historyAtLake = history.filter(h => h.location === sessionLocation && !deletedSessionIds.includes(h.sessionId));
+    const lureSuccess: Record<string, number> = {};
+    historyAtLake.forEach(h => { if (h.lure) lureSuccess[h.lure] = (lureSuccess[h.lure] || 0) + 1; });
+    const topLure = Object.entries(lureSuccess).sort((a, b) => b[1] - a[1])[0];
 
-// 2. SECOND: Update the useMemo (around Line 367)
-const intelligenceData = useMemo(() => {
-  // If we don't have a location yet, or we haven't found the lake metadata, return null
-  if (!sessionLocation || !currentLakeData) return null;
+    return {
+      expectedSpecies: currentLakeData.species_present || ["Unknown"],
+      historyCount: historyAtLake.length,
+      topTactic: topLure ? `${topLure[0]} (${topLure[1]} catches)` : 'No data. Experiment required.',
+      boatLaunch: currentLakeData.has_boat_launch
+    };
+  }, [sessionLocation, currentLakeData, history, deletedSessionIds]);
 
-  // Filter your catch history for this specific lake
-  const historyAtLake = history.filter(h => 
-    h.location === sessionLocation && !deletedSessionIds.includes(h.sessionId)
-  );
-
-  const lureSuccess: Record<string, number> = {};
-  historyAtLake.forEach(h => {
-    if (h.lure) lureSuccess[h.lure] = (lureSuccess[h.lure] || 0) + 1;
-  });
-  
-  const topLure = Object.entries(lureSuccess).sort((a, b) => b[1] - a[1])[0];
-
-  return {
-    // These now pull from the 8,000+ lake database records
-    expectedSpecies: currentLakeData.species_present || ["Unknown"],
-    historyCount: historyAtLake.length,
-    topTactic: topLure ? `${topLure[0]} (${topLure[1]} catches)` : 'No data. Experiment required.',
-    boatLaunch: currentLakeData.has_boat_launch
-  };
-}, [sessionLocation, currentLakeData, history, deletedSessionIds]);
-  
-
-  // Session Handlers
   const handleStartSession = (type: ExpeditionType) => {
     const newId = crypto.randomUUID();
     const now = Date.now();
@@ -433,106 +410,71 @@ const intelligenceData = useMemo(() => {
     setStartTime(now);
     setExpeditionType(type);
     setView('active-session');
-  }
-const handleCancelSession = () => {
-  if (window.confirm("Abort expedition? This will erase all data for this active session.")) {
-    localStorage.removeItem('active_session_id');
-    localStorage.removeItem('active_session_start');
-    localStorage.removeItem('active_session_type');
-    setCurrentSessionId(null);
-    setStartTime(null);
-    setHistory(prev => prev.filter(c => c.sessionId !== currentSessionId));
-    setView('home');
-  }
-};
-  const handleScoutSearch = async (query: string) => {
-  setScoutQuery(query);
-  if (query.length < 2) {
-    setScoutResults([]);
-    return;
-  }
-  
-  setLoading(true);
-  try {
-    let response;
+  };
 
-    if (scoutSearchMode === 'lake') {
-      // Standard name search
-      response = await supabase
-        .from('fishing_locations')
-        .select('*')
-        .ilike('name', `%${query}%`)
-        .limit(10);
-    } else {
-      // Fuzzy Species Search using the new SQL function
-      response = await supabase.rpc('search_lakes_by_species', { 
-        search_term: query 
-      });
+  const handleCancelSession = () => {
+    if (window.confirm("Abort expedition? This will erase all data for this active session.")) {
+      localStorage.removeItem('active_session_id');
+      localStorage.removeItem('active_session_start');
+      localStorage.removeItem('active_session_type');
+      setCurrentSessionId(null);
+      setStartTime(null);
+      setHistory(prev => prev.filter(c => c.sessionId !== currentSessionId));
+      setView('home');
     }
+  };
 
-    const { data, error } = response;
+  const handleScoutSearch = async (query: string) => {
+    setScoutQuery(query);
+    if (query.length < 2) { setScoutResults([]); return; }
+    setLoading(true);
+    try {
+      let response;
+      if (scoutSearchMode === 'lake') {
+        response = await supabase.from('fishing_locations').select('*').ilike('name', `%${query}%`).limit(10);
+      } else {
+        response = await supabase.rpc('search_lakes_by_species', { search_term: query });
+      }
+      const { data, error } = response;
+      if (error) throw error;
+      setScoutResults(data || []);
+    } catch (err) {
+      console.error("Search failed:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    if (error) throw error;
-    setScoutResults(data || []);
-  } catch (err) {
-    console.error("Search failed:", err);
-    // Offline fallbacks remain the same
-  } finally {
-    setLoading(false);
-  }
-};
-const handleViewOfficialRegs = (lakeName: string) => {
-  // 1. Clean up the lake name (remove parentheses like "(King)")
-  const cleanName = lakeName.split('(')[0].trim();
-  
-  // 2. Encode it for a URL
-  const searchParam = encodeURIComponent(cleanName);
-  
-  // 3. This URL points to the WDFW search page with the lake name pre-filled
-  const searchUrl = `https://wdfw.wa.gov/fishing/locations?title=${searchParam}`;
-  
-  // 4. Open the search results in a new tab
-  window.open(searchUrl, '_blank');
-};
-const handleNearbyScout = async () => {
-  if (!sessionLat || !sessionLon) {
-    alert("GPS coordinates not acquired. Please ensure location is enabled.");
-    return;
-  }
-  
-  setLoading(true);
-  setScoutQuery("Nearby Waters");
-  
-  try {
-    // 1. Try the Cloud first (get latest data if online)
-    const { data, error } = await supabase.rpc('get_nearby_lakes', {
-      user_lat: sessionLat,
-      user_lon: sessionLon,
-      radius_meters: 16093 
-    });
+  const handleViewOfficialRegs = (lakeName: string) => {
+    const cleanName = lakeName.split('(')[0].trim();
+    const searchParam = encodeURIComponent(cleanName);
+    const searchUrl = `https://wdfw.wa.gov/fishing/locations?title=${searchParam}`;
+    window.open(searchUrl, '_blank');
+  };
 
-    if (error) throw error;
-    setScoutResults(data || []);
-  } catch (err) {
-    console.error("Proximity search failed, falling back to local vault:", err);
-    
-    // 2. ⚡ OFFLINE FALLBACK: Query the 8,000+ local lakes
-    const allLocalLakes = await db.fishingLocations.toArray();
-    const offlineNearby = allLocalLakes
-      .filter((lake: any) => 
-        calculateDistance(sessionLat, sessionLon, lake.lat, lake.lon) < 10
-      )
-      .sort((a: any, b: any) => {
-        const distA = calculateDistance(sessionLat, sessionLon, a.lat, a.lon);
-        const distB = calculateDistance(sessionLat, sessionLon, b.lat, b.lon);
-        return distA - distB;
+  const handleNearbyScout = async () => {
+    if (!sessionLat || !sessionLon) { alert("GPS coordinates not acquired."); return; }
+    setLoading(true);
+    setScoutQuery("Nearby Waters");
+    try {
+      const { data, error } = await supabase.rpc('get_nearby_lakes', {
+        user_lat: sessionLat,
+        user_lon: sessionLon,
+        radius_meters: 16093 
       });
-      
-    setScoutResults(offlineNearby);
-  } finally {
-    setLoading(false);
-  }
-};
+      if (error) throw error;
+      setScoutResults(data || []);
+    } catch (err) {
+      const allLocalLakes = await db.fishingLocations.toArray();
+      const offlineNearby = allLocalLakes
+        .filter((lake: any) => calculateDistance(sessionLat, sessionLon, lake.lat, lake.lon) < 10)
+        .sort((a, b) => calculateDistance(sessionLat, sessionLon, a.lat, a.lon) - calculateDistance(sessionLat, sessionLon, b.lat, b.lon));
+      setScoutResults(offlineNearby);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleAddCatch = async () => {
     if (!newName || !currentSessionId) return;
     const weightNum = Number(newWeight) || 0;
@@ -563,13 +505,7 @@ const handleNearbyScout = async () => {
         setTimeout(() => setPbCelebration(null), 6000);
       }
       setShowAddDrawer(false);
-      setNewName("");
-      setNewWeight("");
-      setNewLength("");
-      setNewLure("");
-      setNewSoakTime("");
-      setNewKeeperCount("1");
-      setSearchTerm("");
+      setNewName(""); setNewWeight(""); setNewLength(""); setNewLure(""); setNewSoakTime(""); setNewKeeperCount("1"); setSearchTerm("");
     } catch (err) { console.error(err); }
   };
 
@@ -585,7 +521,6 @@ const handleNearbyScout = async () => {
     }
   };
 
-  // Aggregation Logic
   const filteredHistory = useMemo(() => {
     if (yearFilter === 'all-time') return history;
     return history.filter(h => new Date(h.date).getFullYear().toString() === yearFilter);
@@ -597,28 +532,18 @@ const handleNearbyScout = async () => {
     return unsyncedFish + unsyncedSessions;
   }, [history, sessionsMetadata, deletedSessionIds]);
 
- const filteredSpeciesList = useMemo(() => {
-  // 1. If we have a location lock and user isn't typing, show the local "Expected Species"
-  if (intelligenceData?.expectedSpecies && !searchTerm && expeditionType === 'freshwater') {
-    return intelligenceData.expectedSpecies; 
-  }
-
-  // 2. Fallback to libraries if no location is locked or user starts searching
-  let sourceList: string[] = [];
-  
-  if (expeditionType === 'freshwater') {
-    sourceList = ALL_SPECIES; // Pulls from your lib/species-db.ts
-  } else if (expeditionType === 'saltwater') {
-    // You can add more to this list later, but for now we pull the marine fish from your guide
-    sourceList = ['Lingcod', 'Pacific cod', 'Cabezon', 'Pacific halibut', 'Chinook salmon', 'Coho salmon'];
-  } else if (expeditionType === 'shellfish') {
-    sourceList = ['Dungeness crab', 'Red rock crab', 'Signal crayfish', 'Pacific razor clam', 'Spot shrimp'];
-  }
-  
-  // 3. Apply search filter
-  if (!searchTerm) return sourceList.slice(0, 5);
-  return sourceList.filter(s => s.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 5);
-}, [searchTerm, expeditionType, intelligenceData]);
+  const filteredSpeciesList = useMemo(() => {
+    if (intelligenceData?.expectedSpecies && !searchTerm && expeditionType === 'freshwater') {
+      return intelligenceData.expectedSpecies; 
+    }
+    let sourceList: string[] = [];
+    if (expeditionType === 'freshwater') sourceList = ALL_SPECIES;
+    else if (expeditionType === 'saltwater') sourceList = ['Lingcod', 'Pacific cod', 'Cabezon', 'Pacific halibut', 'Chinook salmon', 'Coho salmon'];
+    else if (expeditionType === 'shellfish') sourceList = ['Dungeness crab', 'Red rock crab', 'Signal crayfish', 'Pacific razor clam', 'Spot shrimp'];
+    
+    if (!searchTerm) return sourceList.slice(0, 5);
+    return sourceList.filter(s => s.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 5);
+  }, [searchTerm, expeditionType, intelligenceData]);
 
   const sessionLogs = useMemo(() => {
     return sessionsMetadata
@@ -652,7 +577,6 @@ const handleNearbyScout = async () => {
     });
     return Object.values(list).sort((a: any, b: any) => b.count - a.count);
   }, [filteredHistory, deletedSessionIds]);
-
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 font-sans selection:bg-blue-500/30 overflow-x-hidden">
       
