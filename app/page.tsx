@@ -372,20 +372,27 @@ export default function FishDex() {
     }, { enableHighAccuracy: true });
   };
 
-  // 1. The "Reconnection Listener"
+// 1. IMPROVED RECONNECTION LISTENER
 useEffect(() => {
-  const handleOnline = () => {
-    console.log("🌐 Signal Restored: Backfilling mountain logs...");
-    backfillMissingWeather();
+  const handleOnline = async () => {
+    console.log("🌐 Signal Restored: Syncing Archive...");
+    // Force a data refresh from the cloud first
+    await fetchData();
+    // Then trigger the backfill for weather
+    await backfillMissingWeather();
   };
 
   window.addEventListener('online', handleOnline);
-  if (navigator.onLine) backfillMissingWeather();
+  
+  // Also check on mount if we're already online
+  if (navigator.onLine) {
+    backfillMissingWeather();
+  }
 
   return () => window.removeEventListener('online', handleOnline);
-}, [history]);
+}, []); // Remove 'history' from dependency to prevent infinite loops
 
-// 2. The "Backfill Engine"
+// 2. IMPROVED BACKFILL ENGINE
 const backfillMissingWeather = async () => {
   const incompleteSessions = await db.localSessions
     .where('temp').equals('Pending')
@@ -405,6 +412,8 @@ const backfillMissingWeather = async () => {
       );
       const data = await res.json();
 
+      if (!data.hourly) continue;
+
       const tempVal = Math.round(data.hourly.temperature_2m[hour]);
       const windVal = Math.round(data.hourly.wind_speed_10m[hour]);
       const conditionText = WMO_CODES[data.hourly.weather_code[hour]] || "Overcast";
@@ -416,20 +425,25 @@ const backfillMissingWeather = async () => {
         synced: 0 
       };
 
-      // 1. Update the Database
+      // Update Database
       await db.localSessions.update(session.id, updatedFields);
       
-      // 2. Update local state immediately so the Log Book "flips" live
+      // Update UI State immediately
       setSessionsMetadata(prev => prev.map(s => 
         s.id === session.id ? { ...s, ...updatedFields } : s
       ));
 
-      console.log(`✅ Auto-filled weather for ${session.location}`);
+      // Update Selected Session if the user is currently looking at it
+      if (selectedSession?.id === session.id) {
+        setSelectedSession(prev => prev ? { ...prev, ...updatedFields } : null);
+      }
+
     } catch (err) {
-      console.error("Backfill failed for:", session.location, err);
+      console.error("Backfill failed:", err);
     }
   }
 };
+
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (view === 'active-session') updateLocationData(); }, [view, expeditionType]);
