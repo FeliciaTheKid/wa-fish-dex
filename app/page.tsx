@@ -121,6 +121,7 @@ const mockTidalCalc = (lat: number, lon: number) => {
 export default function FishDex() {
   const [view, setView] = useState<View>('home');
   const [loading, setLoading] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const currentYear = new Date().getFullYear().toString();
   const [yearFilter, setYearFilter] = useState<YearFilter>(currentYear);
   const [expandedLifeSpecies, setExpandedLifeSpecies] = useState<string | null>(null);
@@ -727,22 +728,29 @@ const backfillMissingWeather = async () => {
           </div>
 
           <div 
-            onClick={() => {
-              if (navigator.onLine) {
-                console.log("Manual Sync Triggered...");
-                backfillMissingWeather();
-                fetchData(); 
+            onClick={async () => {
+              if (navigator.onLine && !isSyncing) {
+                setIsSyncing(true);
+                // 🌩️ First, fix the weather on those Green Lake logs
+                await backfillMissingWeather();
+                // ☁️ Second, try to push data to Supabase
+                await fetchData(); 
+                setIsSyncing(false);
               }
             }}
             className="mt-8 p-4 rounded-[1.5rem] bg-slate-900/30 border border-slate-800/50 flex items-center justify-between active:scale-95 transition-all cursor-pointer group"
           >
             <div className="flex items-center gap-3">
-              <div className={`w-2 h-2 rounded-full ${pendingSyncCount > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></div>
+              {/* This dot now turns blue and spins when you tap it */}
+              <div className={`w-2 h-2 rounded-full ${isSyncing ? 'bg-blue-500 animate-spin' : pendingSyncCount > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></div>
+              
               <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 group-hover:text-white transition-colors">
-                {pendingSyncCount > 0 ? 'Local Vault Active (Tap to Sync)' : 'Cloud Synced'}
+                {isSyncing ? 'Synchronizing Archive...' : pendingSyncCount > 0 ? 'Local Vault Active (Tap to Sync)' : 'Cloud Synced'}
               </span>
             </div>
-            {pendingSyncCount > 0 && (
+            
+            {/* The item count (6 Items) disappears while syncing to show progress */}
+            {pendingSyncCount > 0 && !isSyncing && (
               <span className="text-[8px] font-black uppercase text-amber-500 bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20 shadow-[0_0_10px_rgba(245,158,11,0.2)]">
                 {pendingSyncCount} Items
               </span>
