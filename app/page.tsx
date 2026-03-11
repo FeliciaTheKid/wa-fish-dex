@@ -79,13 +79,6 @@ interface SpeciesLibrary {
 // 2. OFFLINE DATA SEEDS
 // ============================================================================
 
-const OFFLINE_WDFW_SPECIES: SpeciesLibrary[] = [
-  { id: '1', name: 'Rainbow Trout', id_tips: 'Pinkish band along lateral line, black spots on back and tail.', habitat: 'Cold, clear lakes and streams.', daily_limit: '5', min_size: '8 inches', image_url: '' },
-  { id: '2', name: 'Smallmouth Bass', id_tips: 'Brown/bronze color, vertical dark bands, jaw does not extend past eye.', habitat: 'Clear, rocky lakes and rivers.', daily_limit: '10', min_size: 'None (only 1 over 14")', image_url: '' },
-  { id: '3', name: 'Dungeness Crab', id_tips: 'White tipped claws, purplish-brown shell.', habitat: 'Eelgrass beds, sandy bottoms in marine areas.', daily_limit: '5 males', min_size: '6.25 inches', image_url: '' },
-  { id: '4', name: 'Razor Clam', id_tips: 'Oblong, thin shell covered with a yellowish-brown varnish-like coating.', habitat: 'Surf-pounded ocean beaches.', daily_limit: '15', min_size: 'None (must keep first 15)', image_url: '' },
-  { id: '5', name: 'Kokanee', id_tips: 'Silver sides, blue/green back, no spots on dorsal fin or tail.', habitat: 'Large, deep, cold lakes.', daily_limit: '10', min_size: 'None', image_url: '' }
-];
 
 // ============================================================================
 // 3. CORE HELPERS
@@ -610,10 +603,17 @@ const handleNearbyScout = async () => {
     return intelligenceData.expectedSpecies; 
   }
 
-  // 2. Fallback to general lists if no location is locked or user starts searching
-  let sourceList = ALL_SPECIES;
-  if (expeditionType === 'saltwater') sourceList = OFFLINE_WDFW_SPECIES.map(s => s.name);
-  if (expeditionType === 'shellfish') sourceList = ['Dungeness Crab', 'Red Rock Crab', 'Razor Clam', 'Manila Clam', 'Geoduck', 'Spot Shrimp'];
+  // 2. Fallback to libraries if no location is locked or user starts searching
+  let sourceList: string[] = [];
+  
+  if (expeditionType === 'freshwater') {
+    sourceList = ALL_SPECIES; // Pulls from your lib/species-db.ts
+  } else if (expeditionType === 'saltwater') {
+    // You can add more to this list later, but for now we pull the marine fish from your guide
+    sourceList = ['Lingcod', 'Pacific cod', 'Cabezon', 'Pacific halibut', 'Chinook salmon', 'Coho salmon'];
+  } else if (expeditionType === 'shellfish') {
+    sourceList = ['Dungeness crab', 'Red rock crab', 'Signal crayfish', 'Pacific razor clam', 'Spot shrimp'];
+  }
   
   // 3. Apply search filter
   if (!searchTerm) return sourceList.slice(0, 5);
@@ -1003,18 +1003,51 @@ const handleNearbyScout = async () => {
             )}
 
             {scoutResults.map((result) => (
-              <div key={result.id} className="bg-slate-900/60 rounded-[2.5rem] border border-slate-800 p-8 shadow-2xl hover:border-blue-500/40 transition-colors">
-                <div className="flex justify-between items-start mb-6">
-                  <h3 className="text-3xl font-black italic uppercase text-white tracking-tighter leading-none w-2/3">{result.name}</h3>
-                  {scoutSearchMode === 'lake' && <span className="text-[8px] font-black bg-blue-600/20 text-blue-400 px-3 py-1.5 rounded-lg uppercase tracking-widest border border-blue-500/30 text-right">{result.county} Co.</span>}
-                </div>
+  <div key={result.id} className="bg-slate-900/60 rounded-[2.5rem] border border-slate-800 p-8 shadow-2xl hover:border-blue-500/40 transition-colors">
+    {/* --- UPDATED HEADER --- */}
+    <div className="flex justify-between items-start mb-6">
+      <div className="w-2/3">
+        <h3 className="text-3xl font-black italic uppercase text-white tracking-tighter leading-none mb-2">
+          {result.name}
+        </h3>
+        {/* 🌲 BACKCOUNTRY BADGE */}
+        {!result.has_boat_launch && result.water_type === 'Lake' && (
+          <span className="text-[7px] font-black bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded border border-emerald-500/20 uppercase tracking-[0.2em] animate-in fade-in zoom-in duration-500">
+            ⛰️ Backcountry / Trek-In
+          </span>
+        )}
+      </div>
+      {scoutSearchMode === 'lake' && (
+        <span className="text-[8px] font-black bg-blue-600/20 text-blue-400 px-3 py-1.5 rounded-lg uppercase tracking-widest border border-blue-500/30 text-right">
+          {result.county} Co.
+        </span>
+      )}
+    </div>
 
                 {scoutSearchMode === 'lake' ? (
                   <div className="space-y-4">
-                    <div className="bg-black/30 p-4 rounded-2xl border border-slate-800">
-                      <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1">Confirmed Species</p>
-                      <p className="text-xs font-bold text-white leading-relaxed">{result.species_present?.join(', ') || 'Data Unavailable'}</p>
-                    </div>
+  {/* 🐟 NEW: DYNAMIC SPECIES PILLS (REPLACES OLD TEXT BLOCK) */}
+  <div className="bg-black/30 p-5 rounded-2xl border border-slate-800">
+    <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-3">Full Biodiversity Intel</p>
+    <div className="flex flex-wrap gap-2">
+      {result.species_present && result.species_present.length > 0 ? (
+        result.species_present.map((fish: string) => (
+          <span 
+            key={fish} 
+            className={`text-[9px] font-black uppercase px-3 py-1.5 rounded-lg border transition-all ${
+              scoutQuery && fish.toLowerCase().includes(scoutQuery.toLowerCase())
+                ? 'bg-blue-600 text-white border-blue-400 shadow-[0_0_10px_rgba(37,99,235,0.4)]' 
+                : 'bg-slate-800 text-slate-400 border-slate-700'
+            }`}
+          >
+            {fish}
+          </span>
+        ))
+      ) : (
+        <p className="text-[10px] text-slate-600 font-bold uppercase italic">No biodiversity data on file.</p>
+      )}
+    </div>
+  </div>
                     
                     <div className="grid grid-cols-2 gap-3">
                       <div className="bg-black/30 p-4 rounded-2xl border border-slate-800 flex items-center justify-between">
@@ -1035,11 +1068,34 @@ const handleNearbyScout = async () => {
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {result.image_url && <img src={result.image_url} alt={result.name} className="w-full h-40 object-cover rounded-[1.5rem] mb-4 border border-slate-800 shadow-inner" />}
-                    <div className="bg-black/30 p-5 rounded-[1.5rem] border border-slate-800">
-                      <p className="text-[8px] font-black uppercase text-blue-500 tracking-widest mb-1">Field ID Tips</p>
-                      <p className="text-[11px] text-slate-300 font-medium leading-relaxed">{result.id_tips}</p>
-                    </div>
+                   <div className="bg-black/30 p-5 rounded-2xl border border-slate-800">
+      <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-3">
+        Full Biodiversity Intel
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {result.species_present && result.species_present.length > 0 ? (
+          result.species_present.map((fish: string) => {
+            // Highlights fish that match your current search term
+            const isMatch = scoutQuery && fish.toLowerCase().includes(scoutQuery.toLowerCase());
+            
+            return (
+              <span 
+                key={fish} 
+                className={`text-[9px] font-black uppercase px-3 py-1.5 rounded-lg border transition-all ${
+                  isMatch
+                    ? 'bg-blue-600 text-white border-blue-400 shadow-[0_0_15px_rgba(37,99,235,0.4)] scale-105 z-10' 
+                    : 'bg-slate-800 text-slate-400 border-slate-700 opacity-70'
+                }`}
+              >
+                {fish}
+              </span>
+            );
+          })
+        ) : (
+          <p className="text-[10px] text-slate-600 font-bold uppercase italic">No biodiversity data on file.</p>
+        )}
+      </div>
+    </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700">
                         <p className="text-[8px] font-black uppercase text-slate-400 tracking-widest mb-1">Min Size</p>
