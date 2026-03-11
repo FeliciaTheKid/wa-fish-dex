@@ -16,6 +16,19 @@ const serwist = new Serwist({
   clientsClaim: true,
   navigationPreload: true,
   runtimeCaching: defaultCache,
+  // 🗺️ TACTICAL FALLBACK:
+  // This ensures that if you're offline at the Puyallup River 
+  // and tap a link you haven't visited, the app still loads the shell.
+  fallbacks: {
+    entries: [
+      {
+        url: "/", // Fallback to home page
+        matcher({ request }) {
+          return request.destination === "document";
+        },
+      },
+    ],
+  },
 });
 
 serwist.addEventListeners();

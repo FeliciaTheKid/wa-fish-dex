@@ -1,11 +1,11 @@
 {
   "private": true,
-"scripts": {
-  "dev": "next dev --webpack",
-  "build": "next build --webpack",
-  "start": "next start",
-  "lint": "next lint"
-},
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "next lint"
+  },
   "dependencies": {
     "@prisma/client": "^7.4.2",
     "@prisma/config": "^7.4.2",

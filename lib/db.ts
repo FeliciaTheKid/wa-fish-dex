@@ -1,43 +1,54 @@
-import Dexie, { type Table } from 'dexie';
+import Dexie, { Table } from 'dexie';
 
-export interface LocalCatch {
+export interface LakeLocation {
+  id: string;
+  name: string;
+  lat: number;
+  lon: number;
+  county?: string;
+  water_type?: string;
+}
+
+export interface LocalSpecies {
   id: string;
   name: string;
   weight: number;
   length: number;
-  lure?: string; // 🎣 Add this line!
+  lure?: string;
   date: string;
   location: string;
   sessionId: string;
-  synced: number; 
+  synced: number;
 }
 
 export interface LocalSession {
   id: string;
   location: string;
   startTime: string;
-  endTime?: string;
+  duration?: string; // ✅ MATCHES YOUR UI TYPE
   notes: string;
   temp: string;
   wind: string;
   cond: string;
   lat: number | null;
-  lon: number | null; 
-  synced: number; 
+  lon: number | null;
+  synced: number;
 }
 
 export class OfflineVault extends Dexie {
-  localSpecies!: Table<LocalCatch>;
+  localSpecies!: Table<LocalSpecies>;
   localSessions!: Table<LocalSession>;
+  fishingLocations!: Table<LakeLocation>;
 
   constructor() {
-    super('EFishVault');
+    super('OfflineVault');
     
-    // We bump this to version 2 because we are adding new columns
-    this.version(2).stores({
-      localSpecies: 'id, sessionId, synced',
-      // 📍 Added lat and lon to the session store
-      localSessions: 'id, synced, lat, lon' 
+    // ⚡ BUMPED TO VERSION 3
+    // We added 'startTime' to the index so your Log Book sorts instantly
+    this.version(3).stores({
+      localSpecies: 'id, sessionId, synced, name',
+      localSessions: 'id, synced, startTime', 
+      fishingLocations: 'id, name' 
     });
   }
 }
