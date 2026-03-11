@@ -372,25 +372,22 @@ export default function FishDex() {
     }, { enableHighAccuracy: true });
   };
 
-// 1. IMPROVED RECONNECTION LISTENER
+// 1. UPDATED RECONNECTION LISTENER
 useEffect(() => {
   const handleOnline = async () => {
-    console.log("🌐 Signal Restored: Syncing Archive...");
-    // Force a data refresh from the cloud first
-    await fetchData();
-    // Then trigger the backfill for weather
-    await backfillMissingWeather();
+    console.log("🌐 Signal Restored: Forcing Weather Backfill...");
+    // Give the DB 1 second to breathe before querying
+    setTimeout(() => {
+      backfillMissingWeather();
+      fetchData(); // Syncs the "Local Vault Active" status
+    }, 1000);
   };
 
   window.addEventListener('online', handleOnline);
-  
-  // Also check on mount if we're already online
-  if (navigator.onLine) {
-    backfillMissingWeather();
-  }
+  if (navigator.onLine) backfillMissingWeather();
 
   return () => window.removeEventListener('online', handleOnline);
-}, []); // Remove 'history' from dependency to prevent infinite loops
+}, []); // Keep dependency array empty to prevent re-running on every history change
 
 // 2. IMPROVED BACKFILL ENGINE
 const backfillMissingWeather = async () => {
@@ -729,14 +726,27 @@ const backfillMissingWeather = async () => {
             </div>
           </div>
 
-          <div className="mt-8 p-4 rounded-[1.5rem] bg-slate-900/30 border border-slate-800/50 flex items-center justify-between">
+          <div 
+            onClick={() => {
+              if (navigator.onLine) {
+                console.log("Manual Sync Triggered...");
+                backfillMissingWeather();
+                fetchData(); 
+              }
+            }}
+            className="mt-8 p-4 rounded-[1.5rem] bg-slate-900/30 border border-slate-800/50 flex items-center justify-between active:scale-95 transition-all cursor-pointer group"
+          >
             <div className="flex items-center gap-3">
               <div className={`w-2 h-2 rounded-full ${pendingSyncCount > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></div>
-              <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">
-                {pendingSyncCount > 0 ? 'Local Vault Active' : 'Cloud Synced'}
+              <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 group-hover:text-white transition-colors">
+                {pendingSyncCount > 0 ? 'Local Vault Active (Tap to Sync)' : 'Cloud Synced'}
               </span>
             </div>
-            {pendingSyncCount > 0 && <span className="text-[8px] font-black uppercase text-amber-500 bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20">{pendingSyncCount} Items</span>}
+            {pendingSyncCount > 0 && (
+              <span className="text-[8px] font-black uppercase text-amber-500 bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20 shadow-[0_0_10px_rgba(245,158,11,0.2)]">
+                {pendingSyncCount} Items
+              </span>
+            )}
           </div>
         </main>
       )}
