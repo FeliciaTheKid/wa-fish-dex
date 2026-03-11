@@ -4,7 +4,7 @@ import { getNearestWater, getWaterWithinRadius, calculateDistance } from "@/lib/
 import { useState, useEffect, useMemo } from 'react'
 import { ALL_SPECIES, FISH_GUIDE } from '@/lib/species-db'
 import { db } from '../lib/db';
-
+import { supabase } from '../lib/supabase' // Ensure this path matches your setup
 // 1. HELPERS (Defined ONCE outside the component)
 const calculateDuration = (start: string, end?: string) => {
   if (!start) return "0m";
@@ -20,9 +20,7 @@ const getWindDirection = (deg: number) => {
   const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
   return directions[Math.round(deg / 45) % 8];
 }
-
-type View = 'home' | 'lifelist' | 'sessions' | 'active-session' | 'summary' | 'session-detail'
-
+type View = 'home' | 'lifelist' | 'sessions' | 'active-session' | 'summary' | 'session-detail' | 'scout'
 interface Catch {
   id: string;
   name: string;
@@ -85,6 +83,10 @@ export default function FishDex() {
   const [fullscreenImage, setFullscreenImage] = useState<{url: string, catchId: string} | null>(null);
   const [newLure, setNewLure] = useState("");
   const [pbCelebration, setPbCelebration] = useState<{name: string, weight: number} | null>(null);
+ // --- SCOUT & SEARCH STATE ---
+  const [scoutSearchMode, setScoutSearchMode] = useState<'lake' | 'fish'>('lake')
+  const [scoutResults, setScoutResults] = useState<any[]>([])
+  const [scoutQuery, setScoutQuery] = useState("") 
   // --- DATA AGGREGATION ---
  const pendingSyncCount = useMemo(() => {
   // Ignore items that are in the delete queue!
@@ -412,6 +414,31 @@ if (sess.temp === '--' && sess.lat && sess.lon) {
   return () => window.removeEventListener('online', syncOfflineData);
 }, []); // Note: leaving dependency array empty so it registers the listeners once
 // --- HANDLERS ---
+const handleScoutSearch = async (query: string) => {
+  setScoutQuery(query);
+  if (query.length < 2) {
+    setScoutResults([]);
+    return;
+  }
+
+  setLoading(true);
+  try {
+    const table = scoutSearchMode === 'lake' ? 'lake_scout' : 'species_library';
+    // We use .ilike to search for names that "contain" the query string (case-insensitive)
+    const { data, error } = await supabase
+      .from(table)
+      .select('*')
+      .ilike('name', `%${query}%`)
+      .limit(10);
+
+    if (error) throw error;
+    setScoutResults(data || []);
+  } catch (err) {
+    console.error("Scout Search Failed:", err);
+  } finally {
+    setLoading(false);
+  }
+};
   const handleStartSession = () => {
     const newId = crypto.randomUUID();
     const now = Date.now();
@@ -730,7 +757,20 @@ const handleDeleteSession = async (sessionId: string) => {
           <span className="font-black uppercase tracking-[0.2em] text-xs">Start New Trip</span>
         </button>
       )}
-
+{/* 🧭 SCOUT BUTTON */}
+<button 
+  onClick={() => setView('scout')} 
+  className="w-full py-8 mb-4 rounded-[2.5rem] bg-slate-900 border border-slate-800 flex items-center justify-between px-8 group active:scale-95 transition-all shadow-xl"
+>
+  <div className="flex items-center gap-4">
+    <span className="text-3xl">🔍</span>
+    <div className="text-left">
+      <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Washington Guide</p>
+      <p className="text-xl font-black italic uppercase text-white">Find Fish & Lakes</p>
+    </div>
+  </div>
+  <span className="text-slate-700 group-hover:text-blue-500 transition-colors">→</span>
+</button>
       <div className="grid grid-cols-2 gap-4">
         <button onClick={() => setView('lifelist')} className="bg-slate-900/50 p-8 rounded-[2rem] border border-slate-800 flex flex-col items-center gap-2 hover:bg-slate-800">
           <span className="text-2xl">🏆</span>
@@ -1135,7 +1175,7 @@ const handleDeleteSession = async (sessionId: string) => {
           
           <a 
           href={`https://www.google.com/maps/search/?api=1&query=${selectedSession.lat},${selectedSession.lon}`}
-            target="_blank"
+          target="_blank"
             rel="noopener noreferrer"
             className="absolute bottom-4 right-4 bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg active:scale-95 transition-all border-b-4 border-blue-800"
           >
@@ -1148,6 +1188,78 @@ const handleDeleteSession = async (sessionId: string) => {
     <button onClick={() => handleDeleteSession(selectedSession.id)} className="w-full py-5 text-[10px] font-black uppercase text-red-400 border border-red-500/20 rounded-2xl bg-red-500/5 hover:bg-red-500/10 transition-colors">
       Delete Expedition
     </button>
+  </main>
+)}
+{/* 🔍 SCOUT & GUIDE VIEW */}
+{view === 'scout' && (
+  <main className="max-w-md mx-auto px-6 pt-8 pb-32 animate-in fade-in duration-300">
+    <button onClick={() => setView('home')} className="mb-8 text-slate-500 font-black uppercase text-[10px] tracking-widest">← Dashboard</button>
+    
+    <h2 className="text-5xl font-black italic uppercase mb-2 tracking-tighter text-white">Scout</h2>
+    <p className="text-blue-500 font-black text-[10px] uppercase mb-8 tracking-widest">Washington Field Guide</p>
+
+    {/* MODE TOGGLE */}
+    <div className="flex bg-slate-900 rounded-2xl p-1 mb-6 border border-slate-800 shadow-inner">
+      <button 
+        onClick={() => { setScoutSearchMode('lake'); setScoutResults([]); }}
+        className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${scoutSearchMode === 'lake' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500'}`}
+      >Lakes</button>
+      <button 
+        onClick={() => { setScoutSearchMode('fish'); setScoutResults([]); }}
+        className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${scoutSearchMode === 'fish' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500'}`}
+      >Species</button>
+    </div>
+
+    {/* SEARCH INPUT */}
+    <div className="relative mb-8">
+      <input 
+        type="text" 
+        placeholder={scoutSearchMode === 'lake' ? "Search 8,000+ Washington Lakes..." : "Search Species (Bass, Trout, etc...)"}
+        className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white outline-none focus:border-blue-500 transition-all shadow-xl"
+        onChange={(e) => handleScoutSearch(e.target.value)}
+      />
+      {loading && <div className="absolute right-5 top-5 animate-spin">⏳</div>}
+    </div>
+
+    {/* RESULTS LIST */}
+    <div className="space-y-4">
+      {scoutResults.length === 0 && scoutQuery.length > 1 && !loading && (
+        <p className="text-center text-[10px] font-black uppercase text-slate-600 tracking-tighter">No records found in the archive.</p>
+      )}
+
+      {scoutResults.map((result) => (
+        <div key={result.id} className="bg-slate-900/50 rounded-[2rem] border border-slate-800 p-6 shadow-xl hover:border-blue-500/30 transition-all">
+          <div className="flex justify-between items-start mb-3">
+            <h3 className="text-xl font-black italic uppercase text-white tracking-tight leading-none">{result.name}</h3>
+            {scoutSearchMode === 'lake' && <span className="text-[9px] font-black bg-blue-600/20 text-blue-400 px-2 py-1 rounded uppercase">{result.county} Co.</span>}
+          </div>
+
+          {scoutSearchMode === 'lake' ? (
+            <>
+              <p className="text-[10px] font-bold text-slate-400 uppercase mb-4">Possible Species: {result.species_present?.join(', ') || 'Contact WDFW'}</p>
+              <div className="flex gap-2">
+                <a href={result.wdfw_url} target="_blank" rel="noreferrer" className="flex-1 bg-slate-800 py-3 rounded-xl text-[9px] font-black uppercase text-center border border-slate-700">Official Regs ↗</a>
+                <button className="flex-1 bg-blue-600 py-3 rounded-xl text-[9px] font-black uppercase border-b-4 border-blue-800">Set Destination</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-[10px] text-slate-300 font-medium leading-relaxed mb-4">{result.id_tips}</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-black/30 p-3 rounded-xl border border-slate-800">
+                  <p className="text-[8px] font-black uppercase text-slate-500">Min Size</p>
+                  <p className="text-xs font-black uppercase text-white">{result.min_size || 'None'}</p>
+                </div>
+                <div className="bg-black/30 p-3 rounded-xl border border-slate-800">
+                  <p className="text-[8px] font-black uppercase text-slate-500">Daily Limit</p>
+                  <p className="text-xs font-black uppercase text-white">{result.daily_limit || 'Varies'}</p>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      ))}
+    </div>
   </main>
 )}
 
