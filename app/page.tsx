@@ -264,50 +264,71 @@ export default function FishDex() {
   }, []);
 
   const fetchData = async () => {
+    if (loading || isSyncing) return;
     setLoading(true);
+
     try {
-      // 1. Concurrent Fetch from Cloud
+      // 1. IDENTIFY UNSYNCED DATA
+      const unsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
+      const unsyncedCatches = await db.localSpecies.where('synced').equals(0).toArray();
+
+      // 2. PUSH TO CLOUD (Only if Online)
+      if (navigator.onLine && (unsyncedSessions.length > 0 || unsyncedCatches.length > 0)) {
+        console.log(`⚡ Pushing ${unsyncedSessions.length} sessions and ${unsyncedCatches.length} catches...`);
+        
+        // Push Sessions
+        for (const session of unsyncedSessions) {
+          const { error } = await supabase.from('Sessions').upsert(session);
+          if (!error) await db.localSessions.update(session.id, { synced: 1 });
+        }
+
+        // Push Catches
+        for (const fish of unsyncedCatches) {
+          const { error } = await supabase.from('species').upsert(fish);
+          if (!error) await db.localSpecies.update(fish.id, { synced: 1 });
+        }
+      }
+
+      // 3. PULL FRESH DATA FROM CLOUD
       const [catchRes, sessionRes] = await Promise.all([
         fetch('/api/species/list', { cache: 'no-store' }),
-        fetch('/api/species/sessions/list', { cache: 'no-store' }) 
+        fetch('/api/species/sessions/list', { cache: 'no-store' })
       ]);
       
       const catchData = await catchRes.json();
       const sessionData = await sessionRes.json();
 
-      // 2. Pull ALL local data (Synced + Unsynced)
-      const localFish = await db.localSpecies.toArray();
-      const localSessions = await db.localSessions.toArray();
-
-      // 3. Sync Offline Lake Cache
+      // 4. SYNC OFFLINE LAKE CACHE
       const localLakeCount = await db.fishingLocations.count();
       if (localLakeCount === 0 && navigator.onLine) {
         const { data: lakes, error } = await supabase.from('fishing_locations').select('*');
         if (!error && lakes) await db.fishingLocations.bulkAdd(lakes);
       }
 
-      // 4. Deduplicate Sessions (The "Ghost Log" Killer)
+      // 5. UPDATE LOCAL STATE & DEDUPLICATE
+      const localFish = await db.localSpecies.toArray();
+      const localSessions = await db.localSessions.toArray();
+
       setSessionsMetadata(() => {
         const sessionMap = new Map();
         localSessions.forEach(s => sessionMap.set(s.id, s));
         if (sessionData.sessions) {
-          sessionData.sessions.forEach((s: any) => sessionMap.set(s.id, s));
+          sessionData.sessions.forEach((s: any) => sessionMap.set(s.id, { ...s, synced: 1 }));
         }
         return Array.from(sessionMap.values());
       });
 
-      // 5. Deduplicate Fish
       setHistory(() => {
         const fishMap = new Map();
         localFish.forEach(f => fishMap.set(f.id, f));
         if (catchData.species) {
-          catchData.species.forEach((f: any) => fishMap.set(f.id, f));
+          catchData.species.forEach((f: any) => fishMap.set(f.id, { ...f, synced: 1 }));
         }
         return Array.from(fishMap.values());
       });
 
-    } catch (e) { 
-      console.warn("Cloud fetch failed, loading offline vault...");
+    } catch (e) {
+      console.warn("Sync failed, loading offline vault...");
       const allLocalFish = await db.localSpecies.toArray();
       const allLocalSessions = await db.localSessions.toArray();
       setHistory(allLocalFish);
@@ -337,8 +358,7 @@ export default function FishDex() {
       
       setNearbyWaters(nearby);
       
-      const currentLoc = sessionLocation;
-      const needsUpdate = currentLoc === "Detecting Location..." || currentLoc === "Unknown Coordinates" || currentLoc.includes("Coord:");
+      const needsUpdate = sessionLocation === "Detecting Location..." || sessionLocation === "Unknown Coordinates";
 
       if (needsUpdate && nearby.length > 0) {
         setSessionLocation(nearby[0].name);
@@ -365,83 +385,77 @@ export default function FishDex() {
           }
         }
       } catch (e) { 
-    setWeather({ temp: 'Pending', wind: 'Pending', cond: 'Offline' });
-  }
+        setWeather({ temp: 'Pending', wind: 'Pending', cond: 'Offline' });
+      }
     }, (error) => {
       console.error("GPS Error:", error);
       setSessionLocation("GPS Signal Blocked");
     }, { enableHighAccuracy: true });
   };
 
-// 1. UPDATED RECONNECTION LISTENER
-useEffect(() => {
-  const handleOnline = async () => {
-    console.log("🌐 Signal Restored: Forcing Weather Backfill...");
-    // Give the DB 1 second to breathe before querying
-    setTimeout(() => {
-      backfillMissingWeather();
-      fetchData(); // Syncs the "Local Vault Active" status
-    }, 1000);
-  };
+  // 1. RECONNECTION LISTENER
+  useEffect(() => {
+    const handleOnline = async () => {
+      console.log("🌐 Signal Restored: Forcing Weather Backfill...");
+      setTimeout(() => {
+        backfillMissingWeather();
+        fetchData();
+      }, 1000);
+    };
 
-  window.addEventListener('online', handleOnline);
-  if (navigator.onLine) backfillMissingWeather();
+    window.addEventListener('online', handleOnline);
+    if (navigator.onLine) backfillMissingWeather();
 
-  return () => window.removeEventListener('online', handleOnline);
-}, []); // Keep dependency array empty to prevent re-running on every history change
+    return () => window.removeEventListener('online', handleOnline);
+  }, []);
 
-// 2. IMPROVED BACKFILL ENGINE
-const backfillMissingWeather = async () => {
-  const incompleteSessions = await db.localSessions
-    .where('temp').equals('Pending')
-    .toArray();
+  // 2. IMPROVED BACKFILL ENGINE
+  const backfillMissingWeather = async () => {
+    const incompleteSessions = await db.localSessions
+      .where('temp').equals('Pending')
+      .toArray();
 
-  if (incompleteSessions.length === 0) return;
+    if (incompleteSessions.length === 0) return;
 
-  for (const session of incompleteSessions) {
-    if (!session.lat || !session.lon) continue;
+    for (const session of incompleteSessions) {
+      if (!session.lat || !session.lon) continue;
 
-    try {
-      const dateStr = new Date(session.startTime).toISOString().split('T')[0];
-      const hour = new Date(session.startTime).getHours();
+      try {
+        const dateStr = new Date(session.startTime).toISOString().split('T')[0];
+        const hour = new Date(session.startTime).getHours();
 
-      const res = await fetch(
-        `https://archive-api.open-meteo.com/v1/archive?latitude=${session.lat}&longitude=${session.lon}&start_date=${dateStr}&end_date=${dateStr}&hourly=temperature_2m,wind_speed_10m,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph`
-      );
-      const data = await res.json();
+        const res = await fetch(
+          `https://archive-api.open-meteo.com/v1/archive?latitude=${session.lat}&longitude=${session.lon}&start_date=${dateStr}&end_date=${dateStr}&hourly=temperature_2m,wind_speed_10m,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph`
+        );
+        const data = await res.json();
 
-      if (!data.hourly) continue;
+        if (!data.hourly) continue;
 
-      const tempVal = Math.round(data.hourly.temperature_2m[hour]);
-      const windVal = Math.round(data.hourly.wind_speed_10m[hour]);
-      const conditionText = WMO_CODES[data.hourly.weather_code[hour]] || "Overcast";
+        const tempVal = Math.round(data.hourly.temperature_2m[hour]);
+        const windVal = Math.round(data.hourly.wind_speed_10m[hour]);
+        const conditionText = WMO_CODES[data.hourly.weather_code[hour]] || "Overcast";
 
-      const updatedFields = {
-        temp: `${tempVal}°F`,
-        wind: `${windVal}mph`,
-        cond: conditionText,
-        synced: 0 
-      };
+        const updatedFields = {
+          temp: `${tempVal}°F`,
+          wind: `${windVal}mph`,
+          cond: conditionText,
+          synced: 0 
+        };
 
-      // Update Database
-      await db.localSessions.update(session.id, updatedFields);
-      
-      // Update UI State immediately
-      setSessionsMetadata(prev => prev.map(s => 
-        s.id === session.id ? { ...s, ...updatedFields } : s
-      ));
+        await db.localSessions.update(session.id, updatedFields);
+        
+        setSessionsMetadata(prev => prev.map(s => 
+          s.id === session.id ? { ...s, ...updatedFields } : s
+        ));
 
-      // Update Selected Session if the user is currently looking at it
-      if (selectedSession?.id === session.id) {
-        setSelectedSession(prev => prev ? { ...prev, ...updatedFields } : null);
+        if (selectedSession?.id === session.id) {
+          setSelectedSession(prev => prev ? { ...prev, ...updatedFields } : null);
+        }
+      } catch (err) {
+        console.error("Backfill failed:", err);
       }
-
-    } catch (err) {
-      console.error("Backfill failed:", err);
     }
-  }
-};
-
+  };
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (view === 'active-session') updateLocationData(); }, [view, expeditionType]);
