@@ -488,7 +488,19 @@ const handleCancelSession = () => {
     setLoading(false);
   }
 };
-
+const handleViewOfficialRegs = (lakeName: string) => {
+  // 1. Clean up the lake name (remove parentheses like "(King)")
+  const cleanName = lakeName.split('(')[0].trim();
+  
+  // 2. Encode it for a URL
+  const searchParam = encodeURIComponent(cleanName);
+  
+  // 3. This URL points to the WDFW search page with the lake name pre-filled
+  const searchUrl = `https://wdfw.wa.gov/fishing/locations?title=${searchParam}`;
+  
+  // 4. Open the search results in a new tab
+  window.open(searchUrl, '_blank');
+};
 const handleNearbyScout = async () => {
   if (!sessionLat || !sessionLon) {
     alert("GPS coordinates not acquired. Please ensure location is enabled.");
@@ -1014,8 +1026,12 @@ const handleNearbyScout = async () => {
                          <span className="text-[10px] font-black text-white">{result.water_type}</span>
                       </div>
                     </div>
-                    
-                    {result.wdfw_url && <a href={result.wdfw_url} target="_blank" rel="noreferrer" className="block w-full bg-blue-600/10 hover:bg-blue-600/20 py-4 rounded-2xl text-[9px] font-black uppercase text-blue-400 text-center border border-blue-500/30 transition-colors tracking-widest mt-2">View Official Regs ↗</a>}
+                    <button 
+  onClick={() => handleViewOfficialRegs(result.name)} 
+  className="block w-full bg-blue-600/10 hover:bg-blue-600/20 py-4 rounded-2xl text-[9px] font-black uppercase text-blue-400 text-center border border-blue-500/30 transition-colors tracking-widest mt-2"
+>
+  View Official Regs ↗
+</button>
                   </div>
                 ) : (
                   <div className="space-y-4">
