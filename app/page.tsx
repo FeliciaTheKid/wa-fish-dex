@@ -166,17 +166,43 @@ export default function FishDex() {
   // 5. HANDLER FUNCTIONS (MOVED INSIDE COMPONENT)
   // ============================================================================
   
-  const handleImageUpload = (catchId: string, file: File) => {
-    const fakeUrl = URL.createObjectURL(file);
-    setHistory(prev => prev.map(c => c.id === catchId ? { ...c, media: [...(c.media || []), fakeUrl] } : c));
+  const handleImageUpload = async (catchId: string, file: File) => {
+  const fakeUrl = URL.createObjectURL(file);
 
-    if (selectedSession) {
-      setSelectedSession({
-        ...selectedSession,
-        catches: selectedSession.catches.map(c => c.id === catchId ? { ...c, media: [...(c.media || []), fakeUrl] } : c)
-      });
+  // 1. Update the 'standalone' table (Active Session state)
+  await db.localSpecies.update(catchId, { 
+    media: [fakeUrl], 
+    synced: 0 
+  });
+
+  // 2. 🧠 Reach into the archived sessions to update the nested catch
+  const allSessions = await db.localSessions.toArray();
+  const parentSession = allSessions.find(s => 
+    s.catches && s.catches.some(c => c.id === catchId)
+  );
+
+  if (parentSession) {
+    const updatedCatches = parentSession.catches.map(c => 
+      c.id === catchId ? { ...c, media: [...(c.media || []), fakeUrl] } : c
+    );
+
+    // Update the database record for the whole session
+    await db.localSessions.update(parentSession.id, { 
+      catches: updatedCatches,
+      synced: 0 // Mark as unsynced so the photo pushes to Supabase
+    });
+
+    // Update the 'Session Detail' view if it's currently open
+    if (selectedSession?.id === parentSession.id) {
+      setSelectedSession({ ...parentSession, catches: updatedCatches });
     }
-  };
+  }
+
+  // 3. Update the global history state so the UI updates instantly
+  setHistory(prev => prev.map(c => 
+    c.id === catchId ? { ...c, media: [...(c.media || []), fakeUrl] } : c
+  ));
+};
 
   const handleUpdateSessionLocation = async (sessionId: string, newLocation: string) => {
     if (!newLocation || newLocation.trim() === "") {
@@ -228,13 +254,16 @@ export default function FishDex() {
   const handleFinalizeSession = async () => {
   if (!currentSessionId || !startTime) return;
 
+  // 🎣 NEW: Grab the fish caught during THIS session from the local history state
+  const sessionCatches = history.filter(c => c.sessionId === currentSessionId);
+
   const sessionData: Expedition = {
     id: currentSessionId,
     type: expeditionType,
     location: sessionLocation,
     startTime: new Date(startTime).toISOString(),
     date: new Date(startTime).toISOString(),
-    duration: calculateDuration(new Date(startTime).toISOString()), // ⏱️ Store the final time
+    duration: calculateDuration(new Date(startTime).toISOString()), 
     notes: sessionNotes,
     temp: weather.temp,
     wind: weather.wind,
@@ -243,18 +272,22 @@ export default function FishDex() {
     lon: sessionLon ?? null,
     tides: tides || undefined,
     synced: 0,
-    catches: []
+    catches: sessionCatches // 🔥 This ensures the fish are stored inside the session
   };
 
-    await db.localSessions.add(sessionData);
-    localStorage.removeItem('active_session_id');
-    localStorage.removeItem('active_session_start');
-    localStorage.removeItem('active_session_type');
-    setCurrentSessionId(null);
-    setSessionNotes("");
-    setView('home');
-    fetchData();
-  };
+  await db.localSessions.add(sessionData);
+  
+  // Clean up active session state
+  localStorage.removeItem('active_session_id');
+  localStorage.removeItem('active_session_start');
+  localStorage.removeItem('active_session_type');
+  setCurrentSessionId(null);
+  setSessionNotes("");
+  setView('home');
+  
+  // Trigger the sync function to push the new session (and its catches) to Supabase
+  fetchData();
+};
 
   // ============================================================================
   // 6. INITIALIZATION & DATA FETCHING
@@ -264,80 +297,49 @@ export default function FishDex() {
   }, []);
 
   const fetchData = async () => {
-    if (loading || isSyncing) return;
-    setLoading(true);
+  if (loading || isSyncing) return;
+  setLoading(true);
 
-    try {
-      // 1. IDENTIFY UNSYNCED DATA
-      const unsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
-      const unsyncedCatches = await db.localSpecies.where('synced').equals(0).toArray();
-
-      // 2. PUSH TO CLOUD (Only if Online)
-      if (navigator.onLine && (unsyncedSessions.length > 0 || unsyncedCatches.length > 0)) {
-        console.log(`⚡ Pushing ${unsyncedSessions.length} sessions and ${unsyncedCatches.length} catches...`);
-        
-        // Push Sessions
-        for (const session of unsyncedSessions) {
-          const { error } = await supabase.from('Sessions').upsert(session);
-          if (!error) await db.localSessions.update(session.id, { synced: 1 });
-        }
-
-        // Push Catches
-        for (const fish of unsyncedCatches) {
-          const { error } = await supabase.from('species').upsert(fish);
-          if (!error) await db.localSpecies.update(fish.id, { synced: 1 });
-        }
+  try {
+    // 1. Sync any unsynced sessions to Supabase
+    const unsyncedSessions = await db.localSessions.where('synced').equals(0).toArray();
+    if (navigator.onLine && unsyncedSessions.length > 0) {
+      for (const session of unsyncedSessions) {
+        const { id, type, location, startTime, notes, temp, wind, cond, lat, lon, catches, duration } = session;
+        const { error } = await supabase.from('sessions').upsert({
+          id, type, location, start_time: startTime, notes, temp, wind, cond, lat, lon, catches, duration, synced: 1
+        });
+        if (!error) await db.localSessions.update(session.id, { synced: 1 });
       }
-
-      // 3. PULL FRESH DATA FROM CLOUD
-      const [catchRes, sessionRes] = await Promise.all([
-        fetch('/api/species/list', { cache: 'no-store' }),
-        fetch('/api/species/sessions/list', { cache: 'no-store' })
-      ]);
-      
-      const catchData = await catchRes.json();
-      const sessionData = await sessionRes.json();
-
-      // 4. SYNC OFFLINE LAKE CACHE
-      const localLakeCount = await db.fishingLocations.count();
-      if (localLakeCount === 0 && navigator.onLine) {
-        const { data: lakes, error } = await supabase.from('fishing_locations').select('*');
-        if (!error && lakes) await db.fishingLocations.bulkAdd(lakes);
-      }
-
-      // 5. UPDATE LOCAL STATE & DEDUPLICATE
-      const localFish = await db.localSpecies.toArray();
-      const localSessions = await db.localSessions.toArray();
-
-      setSessionsMetadata(() => {
-        const sessionMap = new Map();
-        localSessions.forEach(s => sessionMap.set(s.id, s));
-        if (sessionData.sessions) {
-          sessionData.sessions.forEach((s: any) => sessionMap.set(s.id, { ...s, synced: 1 }));
-        }
-        return Array.from(sessionMap.values());
-      });
-
-      setHistory(() => {
-        const fishMap = new Map();
-        localFish.forEach(f => fishMap.set(f.id, f));
-        if (catchData.species) {
-          catchData.species.forEach((f: any) => fishMap.set(f.id, { ...f, synced: 1 }));
-        }
-        return Array.from(fishMap.values());
-      });
-
-    } catch (e) {
-      console.warn("Sync failed, loading offline vault...");
-      const allLocalFish = await db.localSpecies.toArray();
-      const allLocalSessions = await db.localSessions.toArray();
-      setHistory(allLocalFish);
-      setSessionsMetadata(allLocalSessions);
-    } finally {
-      setLoading(false);
     }
-  };
 
+    // 2. Fetch all data for the UI
+    const localSessions = await db.localSessions.toArray();
+    const standaloneSpecies = await db.localSpecies.toArray();
+
+    // 3. 🔥 THE FLATTENING: Combine all fish into one history array
+    const allCatches: Catch[] = [...standaloneSpecies];
+    localSessions.forEach(session => {
+      if (session.catches && Array.isArray(session.catches)) {
+        allCatches.push(...session.catches);
+      }
+    });
+
+    // Remove duplicates based on ID (safety measure)
+    const uniqueCatches = Array.from(new Map(allCatches.map(c => [c.id, c])).values());
+    
+    // 4. Update states
+    setHistory(uniqueCatches.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+    setSessionsMetadata(localSessions);
+
+  } catch (e) {
+    console.warn("Sync stalled, loading offline vault:", e);
+    const offlineSessions = await db.localSessions.toArray();
+    setSessionsMetadata(offlineSessions);
+  } finally {
+    setLoading(false);
+  }
+};
   const updateLocationData = async () => {
     if (typeof window === "undefined" || !navigator.geolocation) return;
 
@@ -604,16 +606,40 @@ export default function FishDex() {
   };
 
   const handleDeleteCatch = async (catchId: string) => {
-    if (!window.confirm("Delete this record permanently?")) return;
-    await db.localSpecies.delete(catchId);
-    setHistory(prev => prev.filter(c => c.id !== catchId));
-    if (selectedSession) {
-      setSelectedSession({ ...selectedSession, catches: selectedSession.catches.filter(c => c.id !== catchId) });
+  if (!window.confirm("Delete this record permanently?")) return;
+
+  // 1. Clear it from the temporary 'standalone' table (Active Sessions)
+  await db.localSpecies.delete(catchId);
+
+  // 2. Clear it from the nested 'catches' array inside any session (Archived Sessions)
+  const allSessions = await db.localSessions.toArray();
+  const parentSession = allSessions.find(s => 
+    s.catches && s.catches.some(c => c.id === catchId)
+  );
+
+  if (parentSession) {
+    const updatedCatches = parentSession.catches.filter(c => c.id !== catchId);
+    
+    // Update the local database
+    await db.localSessions.update(parentSession.id, { 
+      catches: updatedCatches,
+      synced: 0 // 🔄 Mark for re-sync so Supabase knows the session changed!
+    });
+    
+    // Update the Detail View if the user is currently looking at this session
+    if (selectedSession?.id === parentSession.id) {
+      setSelectedSession({ ...parentSession, catches: updatedCatches });
     }
-    if (navigator.onLine) {
-      fetch(`/api/species/delete?id=${catchId}`, { method: 'DELETE' }).catch(console.error);
-    }
-  };
+  }
+
+  // 3. Update the global UI state (History / Life List)
+  setHistory(prev => prev.filter(c => c.id !== catchId));
+
+  // 4. Remote cleanup (Optional: Only if you still have an API for individual deletes)
+  if (navigator.onLine) {
+    fetch(`/api/species/delete?id=${catchId}`, { method: 'DELETE' }).catch(console.error);
+  }
+};
 
   const filteredHistory = useMemo(() => {
     if (yearFilter === 'all-time') return history;
