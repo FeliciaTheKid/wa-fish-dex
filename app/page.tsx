@@ -19,7 +19,7 @@ import 'leaflet/dist/leaflet.css'
 // ============================================================================
 type View = 'home' | 'lifelist' | 'sessions' | 'active-session' | 'summary' | 'session-detail' | 'scout'
 type ExpeditionType = 'freshwater' | 'saltwater' | 'shellfish'
-type YearFilter = 'all-time' | '2026'
+type YearFilter = 'all-time' | string;
 
 interface Catch {
   id: string;
@@ -112,7 +112,8 @@ const mockTidalCalc = (lat: number, lon: number) => {
 export default function FishDex() {
   const [view, setView] = useState<View>('home');
   const [loading, setLoading] = useState(false);
-  const [yearFilter, setYearFilter] = useState<YearFilter>('2026'); 
+  const currentYear = new Date().getFullYear().toString();
+  const [yearFilter, setYearFilter] = useState<YearFilter>(currentYear);
   const [expandedLifeSpecies, setExpandedLifeSpecies] = useState<string | null>(null);
   const [isCustomLocation, setIsCustomLocation] = useState(false);
   const [history, setHistory] = useState<Catch[]>([]);
@@ -136,7 +137,6 @@ export default function FishDex() {
   const [sessionNotes, setSessionNotes] = useState<string>("");
   const [isEditingLogLocation, setIsEditingLogLocation] = useState(false);
   const [displayTime, setDisplayTime] = useState("0m");
-  
   const [showAddDrawer, setShowAddDrawer] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [newName, setNewName] = useState("");
@@ -591,7 +591,7 @@ export default function FishDex() {
               <p className="text-blue-500 font-black text-[9px] uppercase tracking-[0.4em] mt-1">Washington Archive</p>
             </div>
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-1 flex">
-              <button onClick={() => setYearFilter('2026')} className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all ${yearFilter === '2026' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500'}`}>2026</button>
+             <button onClick={() => setYearFilter(currentYear)} className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all ${yearFilter === currentYear ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500'}`}>{currentYear}</button> 
               <button onClick={() => setYearFilter('all-time')} className={`px-4 py-2 rounded-xl text-[9px] font-black uppercase transition-all ${yearFilter === 'all-time' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500'}`}>All-Time</button>
             </div>
           </div>
@@ -1050,7 +1050,7 @@ export default function FishDex() {
         <p className="text-blue-500 font-black text-[10px] uppercase tracking-widest mt-2">{lifeList.length} Unique Species</p>
       </div>
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-1 flex flex-col gap-1 shadow-lg">
-        <button onClick={() => setYearFilter('2026')} className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${yearFilter === '2026' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>2026</button>
+        <button onClick={() => setYearFilter(currentYear)} className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${yearFilter === currentYear ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>{currentYear}</button>
         <button onClick={() => setYearFilter('all-time')} className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${yearFilter === 'all-time' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>All-Time</button>
       </div>
     </div>
@@ -1121,7 +1121,7 @@ export default function FishDex() {
       {/* 2026/ALL-TIME FILTER TOGGLE */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-1 flex flex-col gap-1 shadow-lg">
         <button 
-          onClick={() => setYearFilter('2026')} 
+          onClick={() => setYearFilter(currentYear)} 
           className={`px-3 py-1.5 rounded-lg text-[8px] font-black uppercase transition-all ${yearFilter === '2026' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}
         >
           2026
@@ -1281,21 +1281,43 @@ export default function FishDex() {
         </main>
       )}
 
-      {/* ------------------------------------------------------------------------
-          SUMMARY VIEW
-          ------------------------------------------------------------------------ */}
-      {view === 'summary' && (
-        <main className="max-w-md mx-auto px-6 pt-16 pb-32 animate-in zoom-in-95 duration-300">
-          <h2 className="text-6xl font-black italic uppercase text-white tracking-tighter mb-10 leading-[0.8]">Debrief</h2>
-          
-          <div className="bg-slate-900 rounded-[2.5rem] p-8 border border-slate-800 shadow-2xl mb-8">
-            <p className="text-[9px] font-black text-slate-500 uppercase mb-4 tracking-widest">Field Notes</p>
-            <textarea value={sessionNotes} onChange={(e) => setSessionNotes(e.target.value)} placeholder="Record water clarity, patterns, mistakes made..." className="w-full h-40 bg-transparent text-sm text-white outline-none resize-none font-medium placeholder:text-slate-700" />
-          </div>
-          
-          <button onClick={handleFinalizeSession} className="w-full py-8 rounded-[2rem] bg-blue-600 font-black uppercase tracking-[0.2em] shadow-[0_10px_30px_rgba(37,99,235,0.4)] border-b-4 border-blue-800 text-xs active:scale-95 transition-all text-white">Seal Archive</button>
-        </main>
-      )}
+     {/* ------------------------------------------------------------------------
+    SUMMARY VIEW (Debrief)
+    ------------------------------------------------------------------------ */}
+{view === 'summary' && (
+  <main className="max-w-md mx-auto px-6 pt-16 pb-32 animate-in zoom-in-95 duration-300">
+    <h2 className="text-6xl font-black italic uppercase text-white tracking-tighter mb-10 leading-[0.8]">Debrief</h2>
+    
+    <div className="bg-slate-900 rounded-[2.5rem] p-8 border border-slate-800 shadow-2xl mb-8">
+      <p className="text-[9px] font-black text-slate-500 uppercase mb-4 tracking-widest">Field Notes</p>
+      <textarea 
+        value={sessionNotes} 
+        onChange={(e) => setSessionNotes(e.target.value)} 
+        placeholder="Record water clarity, patterns, mistakes made..." 
+        className="w-full h-40 bg-transparent text-sm text-white outline-none resize-none font-medium placeholder:text-slate-700" 
+      />
+    </div>
+    
+    {/* 🛡️ BUTTON STACK */}
+    <div className="flex flex-col gap-4">
+      {/* NEW: Return/Resume Button */}
+      <button 
+        onClick={() => setView('active-session')} 
+        className="w-full py-6 rounded-[2rem] bg-slate-800 text-slate-400 font-black uppercase tracking-[0.2em] border border-slate-700 text-[10px] active:scale-95 transition-all"
+      >
+        ← Resume Expedition
+      </button>
+
+      {/* EXISTING: Seal Archive Button */}
+      <button 
+        onClick={handleFinalizeSession} 
+        className="w-full py-8 rounded-[2rem] bg-blue-600 font-black uppercase tracking-[0.2em] shadow-[0_10px_30px_rgba(37,99,235,0.4)] border-b-4 border-blue-800 text-xs active:scale-95 transition-all text-white"
+      >
+        Seal Archive
+      </button>
+    </div>
+  </main>
+)}
 
       {/* ------------------------------------------------------------------------
           DYNAMIC ADD DRAWER 
