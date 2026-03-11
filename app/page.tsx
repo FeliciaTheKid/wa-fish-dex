@@ -92,7 +92,16 @@ const calculateDuration = (start: string, end?: string) => {
   const minutes = Math.floor((diff % 3600000) / 60000);
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 };
-
+const WMO_CODES: Record<number, string> = {
+  0: "Clear Sky",
+  1: "Mainly Clear", 2: "Partly Cloudy", 3: "Overcast",
+  45: "Foggy", 48: "Fog",
+  51: "Light Drizzle", 53: "Drizzle", 55: "Heavy Drizzle",
+  61: "Light Rain", 63: "Rain", 65: "Heavy Rain",
+  71: "Light Snow", 73: "Snow", 75: "Heavy Snow",
+  80: "Light Showers", 81: "Showers", 82: "Heavy Showers",
+  95: "Thunderstorm"
+};
 const getWindDirection = (deg: number) => {
   const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
   return directions[Math.round(deg / 45) % 8];
@@ -355,13 +364,72 @@ export default function FishDex() {
           }
         }
       } catch (e) { 
-        setWeather({ temp: 'Offline', wind: 'Offline', cond: 'Unknown' });
-      }
+    setWeather({ temp: 'Pending', wind: 'Pending', cond: 'Offline' });
+  }
     }, (error) => {
       console.error("GPS Error:", error);
       setSessionLocation("GPS Signal Blocked");
     }, { enableHighAccuracy: true });
   };
+
+  // 1. The "Reconnection Listener"
+useEffect(() => {
+  const handleOnline = () => {
+    console.log("🌐 Signal Restored: Backfilling mountain logs...");
+    backfillMissingWeather();
+  };
+
+  window.addEventListener('online', handleOnline);
+  if (navigator.onLine) backfillMissingWeather();
+
+  return () => window.removeEventListener('online', handleOnline);
+}, [history]);
+
+// 2. The "Backfill Engine"
+const backfillMissingWeather = async () => {
+  const incompleteSessions = await db.localSessions
+    .where('temp').equals('Pending')
+    .toArray();
+
+  if (incompleteSessions.length === 0) return;
+
+  for (const session of incompleteSessions) {
+    if (!session.lat || !session.lon) continue;
+
+    try {
+      const dateStr = new Date(session.startTime).toISOString().split('T')[0];
+      const hour = new Date(session.startTime).getHours();
+
+      const res = await fetch(
+        `https://archive-api.open-meteo.com/v1/archive?latitude=${session.lat}&longitude=${session.lon}&start_date=${dateStr}&end_date=${dateStr}&hourly=temperature_2m,wind_speed_10m,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph`
+      );
+      const data = await res.json();
+
+      const tempVal = Math.round(data.hourly.temperature_2m[hour]);
+      const windVal = Math.round(data.hourly.wind_speed_10m[hour]);
+      const conditionText = WMO_CODES[data.hourly.weather_code[hour]] || "Overcast";
+
+      const updatedFields = {
+        temp: `${tempVal}°F`,
+        wind: `${windVal}mph`,
+        cond: conditionText,
+        synced: 0 
+      };
+
+      // 1. Update the Database
+      await db.localSessions.update(session.id, updatedFields);
+      
+      // 2. Update local state immediately so the Log Book "flips" live
+      setSessionsMetadata(prev => prev.map(s => 
+        s.id === session.id ? { ...s, ...updatedFields } : s
+      ));
+
+      console.log(`✅ Auto-filled weather for ${session.location}`);
+    } catch (err) {
+      console.error("Backfill failed for:", session.location, err);
+    }
+  }
+};
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (view === 'active-session') updateLocationData(); }, [view, expeditionType]);
@@ -1171,11 +1239,19 @@ export default function FishDex() {
             </p>
             
             {/* TACTICAL BADGES */}
-            <div className="flex gap-2 pl-2">
-              <span className="text-[8px] bg-black/40 px-2 py-1 rounded-md text-slate-300 uppercase font-black border border-slate-800">{session.temp}</span>
-              <span className="text-[8px] bg-black/40 px-2 py-1 rounded-md text-slate-300 uppercase font-black border border-slate-800">{session.wind}</span>
-              <span className="text-[8px] bg-blue-600/10 px-2 py-1 rounded-md text-blue-400 uppercase font-black border border-blue-500/20 ml-auto">{session.catches.length} Entries</span>
-            </div>
+<div className="flex gap-2 pl-2">
+  {/* 👇 REPLACE THE OLD TEMP SPAN WITH THIS 👇 */}
+  <span className={`text-[8px] px-2 py-1 rounded-md uppercase font-black border ${
+    session.temp === 'Pending' 
+      ? 'bg-amber-500/10 text-amber-500 border-amber-500/20 animate-pulse' 
+      : 'bg-black/40 text-slate-300 border-slate-800'
+  }`}>
+    {session.temp}
+  </span>
+  
+  <span className="text-[8px] bg-black/40 px-2 py-1 rounded-md text-slate-300 uppercase font-black border border-slate-800">{session.wind}</span>
+  <span className="text-[8px] bg-blue-600/10 px-2 py-1 rounded-md text-blue-400 uppercase font-black border border-blue-500/20 ml-auto">{session.catches.length} Entries</span>
+</div>
           </div>
         ))
       )}
