@@ -167,17 +167,46 @@ export default function FishDex() {
   // ============================================================================
   
   const handleImageUpload = async (catchId: string, file: File) => {
-  const fakeUrl = URL.createObjectURL(file);
+  // 1. Convert to Base64 with Compression
+  // Inside handleImageUpload...
+const compressImage = (file: File): Promise<string> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 1200;
+        
+        // Defensive check: if image is smaller than MAX_WIDTH, don't upscale
+        const width = img.width > MAX_WIDTH ? MAX_WIDTH : img.width;
+        const scaleSize = width / img.width;
+        canvas.width = width;
+        canvas.height = img.height * scaleSize;
 
-  // 1. Update the 'standalone' table (Active Session state)
-  // We use the functional update to append the photo, not overwrite it
+        const ctx = canvas.getContext('2d');
+        // Smooth scaling for better detail on fish scales
+        if (ctx) ctx.imageSmoothingQuality = 'high'; 
+        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        
+        resolve(canvas.toDataURL('image/jpeg', 0.7));
+      };
+    };
+  });
+};
+
+  const permanentImageData = await compressImage(file);
+
+  // 2. Update the 'standalone' table (Active Session state)
   const standalone = await db.localSpecies.get(catchId);
   await db.localSpecies.update(catchId, { 
-    media: [...(standalone?.media || []), fakeUrl], 
+    media: [...(standalone?.media || []), permanentImageData], 
     synced: 0 
   });
 
-  // 2. 🧠 Reach into the archived sessions to update the nested catch
+  // 3. Update the archived sessions (Log Book)
   const allSessions = await db.localSessions.toArray();
   const parentSession = allSessions.find(s => 
     s.catches && s.catches.some(c => c.id === catchId)
@@ -185,24 +214,22 @@ export default function FishDex() {
 
   if (parentSession) {
     const updatedCatches = parentSession.catches.map(c => 
-      c.id === catchId ? { ...c, media: [...(c.media || []), fakeUrl] } : c
+      c.id === catchId ? { ...c, media: [...(c.media || []), permanentImageData] } : c
     );
 
-    // Update the database record for the whole session
     await db.localSessions.update(parentSession.id, { 
       catches: updatedCatches,
       synced: 0 
     });
 
-    // Update the 'Session Detail' view if it's currently open
     if (selectedSession?.id === parentSession.id) {
       setSelectedSession({ ...parentSession, catches: updatedCatches });
     }
   }
 
-  // 3. Update the global history state so it shows up everywhere immediately
+  // 4. Update global history state for immediate UI feedback
   setHistory(prev => prev.map(c => 
-    c.id === catchId ? { ...c, media: [...(c.media || []), fakeUrl] } : c
+    c.id === catchId ? { ...c, media: [...(c.media || []), permanentImageData] } : c
   ));
 };
 
@@ -1469,7 +1496,7 @@ export default function FishDex() {
                       </div>
                       <button onClick={() => handleDeleteCatch(fish.id)} className="text-[8px] font-black uppercase text-red-500 bg-red-500/10 px-2.5 py-1.5 rounded-lg border border-red-500/20 active:scale-90 transition-all">Del</button>
                     </div>
-                    {/* --- TACTICAL MEDIA SECTION --- */}
+                    {/* --- TACTICAL MEDIA SECTION (Inside Log Book / Session Detail) --- */}
 <div className="mt-3 pt-3 border-t border-slate-700/50">
   {fish.media && fish.media.length > 0 ? (
     <div className="flex gap-2 overflow-x-auto pb-1">
@@ -1487,7 +1514,7 @@ export default function FishDex() {
         <input 
           type="file" 
           accept="image/*" 
-          capture="environment" 
+          /* capture="environment" REMOVED - This opens the Gallery Picker on Android */
           className="hidden" 
           onChange={(e) => { if (e.target.files?.[0]) handleImageUpload(fish.id, e.target.files[0]); }}
         />
@@ -1496,13 +1523,14 @@ export default function FishDex() {
   ) : (
     <label className="text-[9px] font-black uppercase text-slate-400 flex items-center gap-2 cursor-pointer hover:text-white transition-colors w-max">
       <span className="text-lg">📷</span> Attach Photo
-      <input 
-        type="file" 
-        accept="image/*" 
-        capture="environment" 
-        className="hidden" 
-        onChange={(e) => { if (e.target.files?.[0]) handleImageUpload(fish.id, e.target.files[0]); }}
-      />
+      {/* Look for this around line 964 in your full file */}
+<input 
+  type="file" 
+  accept="image/*" 
+  /* capture="environment" - REMOVED */
+  className="hidden" 
+  onChange={(e) => { if (e.target.files?.[0]) handleImageUpload(fish.id, e.target.files[0]); }}
+/>
     </label>
   )}
 </div>
