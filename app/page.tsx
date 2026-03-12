@@ -170,8 +170,10 @@ export default function FishDex() {
   const fakeUrl = URL.createObjectURL(file);
 
   // 1. Update the 'standalone' table (Active Session state)
+  // We use the functional update to append the photo, not overwrite it
+  const standalone = await db.localSpecies.get(catchId);
   await db.localSpecies.update(catchId, { 
-    media: [fakeUrl], 
+    media: [...(standalone?.media || []), fakeUrl], 
     synced: 0 
   });
 
@@ -189,7 +191,7 @@ export default function FishDex() {
     // Update the database record for the whole session
     await db.localSessions.update(parentSession.id, { 
       catches: updatedCatches,
-      synced: 0 // Mark as unsynced so the photo pushes to Supabase
+      synced: 0 
     });
 
     // Update the 'Session Detail' view if it's currently open
@@ -198,7 +200,7 @@ export default function FishDex() {
     }
   }
 
-  // 3. Update the global history state so the UI updates instantly
+  // 3. Update the global history state so it shows up everywhere immediately
   setHistory(prev => prev.map(c => 
     c.id === catchId ? { ...c, media: [...(c.media || []), fakeUrl] } : c
   ));
@@ -236,20 +238,53 @@ export default function FishDex() {
   };
 
   const handleDeleteImage = async () => {
-    if (!fullscreenImage) return;
-    const { url, catchId } = fullscreenImage;
-    if (!window.confirm("Are you sure you want to delete this photo?")) return;
+  if (!fullscreenImage) return;
+  const { url, catchId } = fullscreenImage;
+  if (!window.confirm("Are you sure you want to delete this photo?")) return;
 
-    setHistory(prev => prev.map(c => {
+  // 1. Scrub from the standalone table
+  const standalone = await db.localSpecies.get(catchId);
+  if (standalone) {
+    await db.localSpecies.update(catchId, { 
+      media: (standalone.media || []).filter(m => m !== url),
+      synced: 0 
+    });
+  }
+
+  // 2. Scrub from nested session data
+  const allSessions = await db.localSessions.toArray();
+  const parentSession = allSessions.find(s => 
+    s.catches && s.catches.some(c => c.id === catchId)
+  );
+
+  if (parentSession) {
+    const updatedCatches = parentSession.catches.map(c => {
       if (c.id === catchId) {
-        const newMedia = (c.media || []).filter(m => m !== url);
-        db.localSpecies.update(catchId, { media: newMedia, synced: 0 } as any).catch(console.error);
-        return { ...c, media: newMedia, synced: 0 };
+        return { ...c, media: (c.media || []).filter((m: string) => m !== url) };
       }
       return c;
-    }));
-    setFullscreenImage(null);
-  };
+    });
+
+    await db.localSessions.update(parentSession.id, { 
+      catches: updatedCatches,
+      synced: 0 
+    });
+
+    if (selectedSession?.id === parentSession.id) {
+      setSelectedSession({ ...parentSession, catches: updatedCatches });
+    }
+  }
+
+  // 3. Update UI state
+  setHistory(prev => prev.map(c => {
+    if (c.id === catchId) {
+      return { ...c, media: (c.media || []).filter(m => m !== url) };
+    }
+    return c;
+  }));
+
+  setFullscreenImage(null);
+};
 
   const handleFinalizeSession = async () => {
   if (!currentSessionId || !startTime) return;
@@ -973,19 +1008,41 @@ export default function FishDex() {
                             <button onClick={() => handleDeleteCatch(fish.id)} className="text-[8px] font-black uppercase text-red-500 bg-red-500/10 px-3 py-1.5 rounded hover:bg-red-500/20 transition-colors">Del</button>
                           </div>
                           <div className="mt-3 pt-3 border-t border-slate-700/50">
-                            {fish.media && fish.media.length > 0 ? (
-                               <div className="flex gap-2 overflow-x-auto pb-1">
-                                {fish.media.map((url: string) => (
-                                  <img key={url} src={url} onClick={() => setFullscreenImage({ url, catchId: fish.id })} className="w-12 h-12 rounded-lg object-cover border border-slate-600" alt="Catch" />
-                                ))}
-                               </div>
-                            ) : (
-                               <label className="text-[9px] font-black uppercase text-slate-400 flex items-center gap-2 cursor-pointer hover:text-white transition-colors w-max">
-                                 <span className="text-lg">📷</span> Attach Photo
-                                 <input type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { if (e.target.files?.[0]) handleImageUpload(fish.id, e.target.files[0]); }}/>
-                               </label>
-                            )}
-                          </div>
+  {fish.media && fish.media.length > 0 ? (
+    <div className="flex gap-2 overflow-x-auto pb-1">
+      {fish.media.map((url: string) => (
+        <img 
+          key={url} 
+          src={url} 
+          onClick={() => setFullscreenImage({ url, catchId: fish.id })} 
+          className="w-14 h-14 rounded-xl object-cover border border-slate-700 cursor-pointer shadow-md active:scale-95 transition-all" 
+          alt="Catch" 
+        />
+      ))}
+      <label className="flex-shrink-0 w-14 h-14 rounded-xl border border-dashed border-slate-700 flex items-center justify-center text-slate-500 cursor-pointer hover:border-blue-500 hover:text-blue-500 transition-colors">
+        <span className="text-xl font-light">+</span>
+        <input 
+          type="file" 
+          accept="image/*" 
+          capture="environment" 
+          className="hidden" 
+          onChange={(e) => { if (e.target.files?.[0]) handleImageUpload(fish.id, e.target.files[0]); }}
+        />
+      </label>
+    </div>
+  ) : (
+    <label className="text-[9px] font-black uppercase text-slate-400 flex items-center gap-2 cursor-pointer hover:text-white transition-colors w-max">
+      <span className="text-lg">📷</span> Attach Photo
+      <input 
+        type="file" 
+        accept="image/*" 
+        capture="environment" 
+        className="hidden" 
+        onChange={(e) => { if (e.target.files?.[0]) handleImageUpload(fish.id, e.target.files[0]); }}
+      />
+    </label>
+  )}
+</div>
                         </div>
                       ))}
                     </div>
@@ -1412,13 +1469,43 @@ export default function FishDex() {
                       </div>
                       <button onClick={() => handleDeleteCatch(fish.id)} className="text-[8px] font-black uppercase text-red-500 bg-red-500/10 px-2.5 py-1.5 rounded-lg border border-red-500/20 active:scale-90 transition-all">Del</button>
                     </div>
-                    {fish.media && fish.media.length > 0 && (
-                      <div className="flex gap-2 mt-3 pt-3 border-t border-slate-800 overflow-x-auto pb-1">
-                        {fish.media.map((url: string) => (
-                          <img key={url} src={url} onClick={() => setFullscreenImage({ url, catchId: fish.id })} className="w-14 h-14 rounded-xl object-cover border border-slate-700 cursor-pointer shadow-md" alt="Catch" />
-                        ))}
-                      </div>
-                    )}
+                    {/* --- TACTICAL MEDIA SECTION --- */}
+<div className="mt-3 pt-3 border-t border-slate-700/50">
+  {fish.media && fish.media.length > 0 ? (
+    <div className="flex gap-2 overflow-x-auto pb-1">
+      {fish.media.map((url: string) => (
+        <img 
+          key={url} 
+          src={url} 
+          onClick={() => setFullscreenImage({ url, catchId: fish.id })} 
+          className="w-14 h-14 rounded-xl object-cover border border-slate-700 cursor-pointer shadow-md active:scale-95 transition-all" 
+          alt="Catch" 
+        />
+      ))}
+      <label className="flex-shrink-0 w-14 h-14 rounded-xl border border-dashed border-slate-700 flex items-center justify-center text-slate-500 cursor-pointer hover:border-blue-500 hover:text-blue-500 transition-colors">
+        <span className="text-xl font-light">+</span>
+        <input 
+          type="file" 
+          accept="image/*" 
+          capture="environment" 
+          className="hidden" 
+          onChange={(e) => { if (e.target.files?.[0]) handleImageUpload(fish.id, e.target.files[0]); }}
+        />
+      </label>
+    </div>
+  ) : (
+    <label className="text-[9px] font-black uppercase text-slate-400 flex items-center gap-2 cursor-pointer hover:text-white transition-colors w-max">
+      <span className="text-lg">📷</span> Attach Photo
+      <input 
+        type="file" 
+        accept="image/*" 
+        capture="environment" 
+        className="hidden" 
+        onChange={(e) => { if (e.target.files?.[0]) handleImageUpload(fish.id, e.target.files[0]); }}
+      />
+    </label>
+  )}
+</div>
                   </div>
                 ))}
               </div>
