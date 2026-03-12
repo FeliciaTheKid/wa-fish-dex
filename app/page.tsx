@@ -1484,7 +1484,22 @@ const processDeleteQueue = async () => {
   )}
 </div>
           </div>
-
+<div className="grid grid-cols-3 gap-2 mb-8">
+      <div className="bg-slate-900/60 py-4 rounded-[1.5rem] border border-slate-800/50 text-center shadow-inner">
+        <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1">Air</p>
+        <p className={`text-sm font-black ${selectedSession.temp === 'Pending' ? 'text-amber-500 animate-pulse' : 'text-white'}`}>
+          {selectedSession.temp}
+        </p>
+      </div>
+      <div className="bg-slate-900/60 py-4 rounded-[1.5rem] border border-slate-800/50 text-center shadow-inner">
+        <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1">Wind</p>
+        <p className="text-sm font-black text-white">{selectedSession.wind}</p>
+      </div>
+      <div className="bg-slate-900/60 py-4 rounded-[1.5rem] border border-slate-800/50 text-center shadow-inner">
+        <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1">Sky</p>
+        <p className="text-[10px] font-black uppercase text-white truncate px-1">{selectedSession.cond}</p>
+      </div>
+    </div>
           {selectedSession.lat && selectedSession.lon && (
             <div className="mb-10">
               <p className="text-[9px] font-black text-slate-500 uppercase mb-3 tracking-widest">Topological Intel</p>
