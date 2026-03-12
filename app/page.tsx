@@ -251,19 +251,54 @@ const compressImage = (file: File): Promise<string> => {
   };
 
   const handleDeleteSession = async (sessionId: string) => {
-    if (!window.confirm("Are you sure you want to delete this entire expedition?")) return;
-    try {
-      await db.localSessions.delete(sessionId);
-      await db.localSpecies.where('sessionId').equals(sessionId).delete();
-      setHistory(prev => prev.filter(c => c.sessionId !== sessionId));
-      setSessionsMetadata(prev => prev.filter(s => s.id !== sessionId));
-      setSelectedSession(null);
-      setView('sessions');
-    } catch (e) {
-      console.error("Delete failed:", e);
-    }
-  };
+  if (!window.confirm("Erase this expedition from all devices?")) return;
 
+  try {
+    // 1. Immediate Local Cleanup
+    await db.localSessions.delete(sessionId);
+    await db.localSpecies.where('sessionId').equals(sessionId).delete();
+
+    // 2. Add to the 'Pending Delete' Queue in LocalStorage
+    const pendingDeletes = JSON.parse(localStorage.getItem('pending_deletes') || '[]');
+    if (!pendingDeletes.includes(sessionId)) {
+      localStorage.setItem('pending_deletes', JSON.stringify([...pendingDeletes, sessionId]));
+    }
+
+    // 3. Update UI
+    setHistory(prev => prev.filter(c => c.sessionId !== sessionId));
+    setSessionsMetadata(prev => prev.filter(s => s.id !== sessionId));
+    setSelectedSession(null);
+    setView('sessions');
+
+    // 4. If online, try a quick 'silent' delete from Supabase
+    if (navigator.onLine) {
+      processDeleteQueue();
+    }
+  } catch (e) {
+    console.error("Local delete failed:", e);
+  }
+};
+const processDeleteQueue = async () => {
+  if (!navigator.onLine) return;
+  
+  const pendingDeletes = JSON.parse(localStorage.getItem('pending_deletes') || '[]');
+  if (pendingDeletes.length === 0) return;
+
+  console.log(`🧹 Scrubbing ${pendingDeletes.length} items from Supabase...`);
+
+  for (const sessionId of pendingDeletes) {
+    const { error } = await supabase
+      .from('sessions')
+      .delete()
+      .eq('id', sessionId);
+
+    if (!error) {
+      const updatedQueue = JSON.parse(localStorage.getItem('pending_deletes') || '[]')
+        .filter((id: string) => id !== sessionId);
+      localStorage.setItem('pending_deletes', JSON.stringify(updatedQueue));
+    }
+  }
+};
   const handleDeleteImage = async () => {
   if (!fullscreenImage) return;
   const { url, catchId } = fullscreenImage;
@@ -833,7 +868,7 @@ const compressImage = (file: File): Promise<string> => {
             onClick={async () => {
               if (navigator.onLine && !isSyncing) {
                 setIsSyncing(true);
-                // 🌩️ First, fix the weather on those Green Lake logs
+                await processDeleteQueue();
                 await backfillMissingWeather();
                 // ☁️ Second, try to push data to Supabase
                 await fetchData(); 
